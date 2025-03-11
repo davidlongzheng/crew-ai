@@ -1,4 +1,4 @@
-from app.types import Card
+from .types import Card
 
 
 def split_by_suit(hand: list[Card]) -> list[list[Card]]:

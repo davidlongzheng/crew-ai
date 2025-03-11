@@ -1,12 +1,12 @@
-from __future__ import annotations
+from __future__ import absolute_import, annotations
 
 import click
 
-from app.engine import Engine
-from app.settings import Settings
-from app.tasks import Task
-from app.types import Action
-from app.utils import split_by_suit
+from .engine import Engine
+from .settings import Settings
+from .tasks import Task
+from .types import Action
+from .utils import split_by_suit
 
 
 def display_game_state(engine: Engine) -> None:

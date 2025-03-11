@@ -1,6 +1,6 @@
 import pytest
 
-from app.types import Card
+from ..types import Card
 
 
 def test_card_creation() -> None:

@@ -1,12 +1,12 @@
-from __future__ import annotations
+from __future__ import absolute_import, annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from app.types import TRUMP_SUIT_NUM
+from .types import TRUMP_SUIT_NUM
 
 if TYPE_CHECKING:
-    from app.tasks import Task
+    from .tasks import Task
 
 
 @dataclass(frozen=True)
@@ -29,9 +29,19 @@ class Settings:
             + self.use_trump_suit * self.trump_suit_length
         ) // self.num_players
 
+    @property
+    def num_ranks(self):
+        return max(
+            self.side_suit_length, self.trump_suit_length if self.use_trump_suit else 0
+        )
+
+    @property
+    def num_suits(self):
+        return self.num_side_suits + self.use_trump_suit
+
 
 def easy_tasks():
-    from app.tasks import Task
+    from .tasks import Task
 
     defs = ["#T>=1", "#T>=2", "#T>=1"]
     return [Task(f, "") for f in defs]

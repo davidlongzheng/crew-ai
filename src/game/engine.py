@@ -1,10 +1,12 @@
+from __future__ import absolute_import, annotations
+
 import random
 
-from app.settings import Settings
-from app.state import State
-from app.tasks import AssignedTask
-from app.types import TRUMP_SUIT_NUM, Action, Card, Signal, SignalValue, Phase
-from app.utils import split_by_suit
+from .settings import Settings
+from .state import State
+from .tasks import AssignedTask
+from .types import TRUMP_SUIT_NUM, Action, Card, Phase, Signal, SignalValue
+from .utils import split_by_suit
 
 
 class Engine:

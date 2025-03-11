@@ -1,8 +1,10 @@
+from __future__ import absolute_import, annotations
+
 from dataclasses import dataclass
 from typing import Literal
 
-from app.tasks import AssignedTask
-from app.types import Action, Card, Phase, Signal
+from .tasks import AssignedTask
+from .types import Action, Card, Phase, Signal
 
 
 @dataclass

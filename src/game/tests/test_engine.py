@@ -1,10 +1,12 @@
+from __future__ import absolute_import
+
 import random
 
 import pytest
 
-from app.engine import Engine
-from app.settings import Settings
-from app.types import Action, Card
+from ..engine import Engine
+from ..settings import Settings
+from ..types import Action, Card
 
 
 def test_engine_initialization() -> None:

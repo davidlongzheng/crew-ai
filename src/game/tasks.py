@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Literal, cast, get_args
 
-from app.settings import Settings
-from app.types import TO_SUIT_NUM, Card
+from .settings import Settings
+from .types import TO_SUIT_NUM, Card
 
 if TYPE_CHECKING:
-    from app.state import State
+    from .state import State
 
 Status = Literal["success", "fail", "unresolved"]
 Direction = Literal[">", "<", ">=", "=", "<="]
@@ -27,7 +27,7 @@ class Condition:
     def on_trick_end(self, state: State):
         pass
 
-    def on_game_end(self):
+    def on_end(self):
         pass
 
 
@@ -47,7 +47,7 @@ class TrickCond(Condition):
             won_trick = state.trick_winner == self.player
             self.status = "success" if won_trick == (not self.no) else "fail"
 
-    def on_game_end(self):
+    def on_end(self):
         assert self.status != "unresolved"
 
 
@@ -67,7 +67,7 @@ class CardCond(Condition):
         ):
             self.status = "success"
 
-    def on_game_end(self):
+    def on_end(self):
         if self.status != "success":
             self.status = "fail"
 
@@ -109,7 +109,7 @@ class CumTrickCond(Condition):
             else:
                 assert isinstance(self.num_tricks, int)
 
-    def on_game_end(self):
+    def on_end(self):
         if isinstance(self.num_tricks, int):
             num_other_tricks_won = self.num_tricks
         elif self.num_tricks in {"capt", "sumothers"}:
@@ -164,7 +164,7 @@ class CumCardCond(Condition):
                     1 for card, _ in state.active_cards if self.other_card_filter(card)
                 )
 
-    def on_game_end(self):
+    def on_end(self):
         compare_value = (
             self.num_cards if self.num_cards is not None else self.other_cards_won
         )
@@ -194,7 +194,7 @@ class WithCond(Condition):
             if self.card_filter(player_card):
                 self.status = "success"
 
-    def on_game_end(self):
+    def on_end(self):
         if self.status != "success":
             self.status = "fail"
 
@@ -220,7 +220,7 @@ class SweepCond(Condition):
                 if not card.is_trump:
                     self.cards_won_per_suit[card.suit] += 1
 
-    def on_game_end(self):
+    def on_end(self):
         num_sweeps = sum(
             x == self.settings.side_suit_length
             for x in self.cards_won_per_suit.values()
@@ -249,7 +249,7 @@ class ConsecCond(Condition):
         if state.trick_winner == self.player:
             self.won_tricks.add(state.trick)
 
-    def on_game_end(self):
+    def on_end(self):
         cur_consec_start, cur_consec_end = None, None
         best_consec_start, best_consec_end = None, None
 
@@ -295,7 +295,7 @@ class SumCond(Condition):
             if compare_dir(trick_sum, self.sum, self.direction):
                 self.status = "success"
 
-    def on_game_end(self):
+    def on_end(self):
         if self.status != "success":
             self.status = "fail"
 
@@ -315,7 +315,7 @@ class NoLeadCond(Condition):
         if state.leader == self.player and state.active_cards[0][0].suit in self.suits:
             self.status = "fail"
 
-    def on_game_end(self):
+    def on_end(self):
         if self.status == "unresolved":
             self.status = "success"
 
@@ -533,7 +533,7 @@ class AssignedTask(Task):
                 continue
             cond.on_trick_end(state)
             if self.in_one_trick:
-                cond.on_game_end()
+                cond.on_end()
 
         if all(cond.status == "success" for cond in self.conds):
             self.status = "success"
@@ -559,7 +559,7 @@ class AssignedTask(Task):
             if cond.status != "unresolved":
                 continue
 
-            cond.on_game_end()
+            cond.on_end()
 
         assert all(cond.status != "unresolved" for cond in self.conds)
         if all(cond.status == "success" for cond in self.conds):
