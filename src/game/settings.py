@@ -3,6 +3,7 @@ from __future__ import absolute_import, annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ..lib.utils import coerce_string
 from .types import TRUMP_SUIT_NUM
 
 if TYPE_CHECKING:
@@ -30,6 +31,14 @@ class Settings:
         ) // self.num_players
 
     @property
+    def max_hand_size(self):
+        return (
+            self.num_side_suits * self.side_suit_length
+            + self.use_trump_suit * self.trump_suit_length
+            - 1
+        ) // self.num_players + 1
+
+    @property
     def num_ranks(self):
         return max(
             self.side_suit_length, self.trump_suit_length if self.use_trump_suit else 0
@@ -38,6 +47,14 @@ class Settings:
     @property
     def num_suits(self):
         return self.num_side_suits + self.use_trump_suit
+
+    @staticmethod
+    def parse_str(txt):
+        kwargs = dict([x.split("=") for x in txt.split(",")])
+        for k, v in kwargs.items():
+            kwargs[k] = coerce_string(v)
+
+        return Settings(**kwargs)
 
 
 def easy_tasks():

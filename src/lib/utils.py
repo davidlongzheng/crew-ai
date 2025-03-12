@@ -1,0 +1,23 @@
+def coerce_string(value):
+    """
+    Coerces a string value to its appropriate primitive type (int, float, bool, or string).
+
+    Args:
+        value: The string value to coerce.
+
+    Returns:
+        The coerced value, or the original string if coercion is not possible.
+    """
+
+    if value.lower() == "true":
+        return True
+    elif value.lower() == "false":
+        return False
+
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value

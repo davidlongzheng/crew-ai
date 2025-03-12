@@ -1,18 +1,19 @@
-import numpy as np
 import torch
-from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 
+from ..game.settings import Settings
 from ..lib.types import StrMap
 
 
 def featurize(
-    embed_models: dict[str, nn.Module],
-    *,
-    public_history: None | StrMap | list[StrMap] | list[list[StrMap]],
+    public_history: StrMap | list[StrMap] | list[list[StrMap]],
     private_inputs: StrMap | list[StrMap] | list[list[StrMap]],
     valid_actions: tuple | list[tuple] | list[list[tuple]],
+    settings: Settings,
+    *,
     non_feature_dims: int,
-) -> tuple[torch.Tensor | None, ...]:
+    device: torch.device | None = None,
+) -> StrMap:
     """Takes in a set of nn inputs and featurizes the inputs.
 
     Inputs to the func are either F, (T, F), or (N, T, F).
@@ -31,74 +32,64 @@ def featurize(
 
         return ret
 
-    def max_length_per_depth(inp, *, depth=0, depth_counts=None):
-        if depth_counts is None:
-            depth_counts = {}
+    seq_lengths = (
+        torch.tensor([len(x) for x in public_history], dtype=torch.int8, device=device)
+        if non_feature_dims == 2
+        else None
+    )
 
-        if isinstance(inp, (list, tuple)):
-            depth_counts[depth] = max(depth_counts.get(depth, 0), len(inp))
-            for item in inp:
-                max_length_per_depth(item, depth=depth + 1, depth_counts=depth_counts)
+    def pad_seq(inp, *, dtype):
+        if non_feature_dims == 2:
+            return pad_sequence(
+                [torch.tensor(x, dtype=dtype, device=device) for x in inp],
+                batch_first=True,
+            )
+        return torch.tensor(inp, dtype=dtype, device=device)
 
-        return [depth_counts[d] for d in sorted(depth_counts)]
+    hist_player_idxs = pad_seq(
+        mapper(lambda x: x.get("player_idx", -1), public_history),
+        dtype=torch.int8,
+    )
+    hist_tricks = pad_seq(
+        mapper(lambda x: x.get("trick", -1), public_history), dtype=torch.int8
+    )
+    hist_cards = pad_seq(
+        mapper(lambda x: x.get("card", (-1, -1)), public_history), dtype=torch.int8
+    )
+    hist_turns = pad_seq(
+        mapper(lambda x: x.get("turn", -1), public_history), dtype=torch.int8
+    )
 
-    def pad(inp, shape, pad_value, *, depth=0):
-        if not isinstance(inp, (list, tuple)):
-            return inp
+    def pad_cards(x: list[tuple]):
+        assert len(x) <= settings.max_hand_size
+        return x + [(-1, -1)] * (settings.max_hand_size - len(x))
 
-        arr = [pad(x, shape, pad_value, depth=depth + 1) for x in inp]
-        assert len(arr) <= shape[depth]
-        pad_len = shape[depth] - len(arr)
-        if pad_len > 0:
-            arr += [
-                np.full(shape[depth + 1 :], fill_value=pad_value).tolist()
-            ] * pad_len
-
-        return arr
-
-    def padded_tensor(inp, *, dtype, pad_value=-1):
-        shape = max_length_per_depth(inp)
-        arr = pad(inp, shape, pad_value)
-        return torch.tensor(arr, dtype=dtype)
-
-    hist_inp = None
-    if public_history is not None:
-        hist_player_idxs = padded_tensor(
-            mapper(lambda x: x["player_idx"], public_history), dtype=torch.int8
-        )
-        hist_tricks = padded_tensor(
-            mapper(lambda x: x["trick"], public_history), dtype=torch.int8
-        )
-        hist_cards = padded_tensor(
-            mapper(lambda x: x["card"], public_history), dtype=torch.int8
-        )
-        hist_last_in_trick = padded_tensor(
-            mapper(lambda x: x["last_in_trick"], public_history), dtype=torch.float16
-        )
-        hist_player_embed = embed_models["player"](hist_player_idxs)
-        hist_trick_embed = embed_models["trick"](hist_tricks)
-        hist_card_embed = embed_models["card"](hist_cards)
-        assert (
-            hist_player_embed.shape == hist_trick_embed.shape == hist_card_embed.shape
-        )
-        hist_embed = hist_player_embed + hist_trick_embed + hist_card_embed
-        hist_inp = torch.cat([hist_embed, hist_last_in_trick.unsqueeze(-1)], dim=-1)
-
-    hand = padded_tensor(mapper(lambda x: x["hand"], private_inputs), dtype=torch.int8)
-    player_idx = padded_tensor(
+    hand = pad_seq(
+        mapper(lambda x: pad_cards(x["hand"]), private_inputs), dtype=torch.int8
+    )
+    player_idx = pad_seq(
         mapper(lambda x: x["player_idx"], private_inputs), dtype=torch.int8
     )
-    trick = padded_tensor(
-        mapper(lambda x: x["trick"], private_inputs), dtype=torch.int8
-    )
-    hand_embed = embed_models["hand"](hand)
-    player_embed = embed_models["player"](player_idx)
-    trick_embed = embed_models["player"](trick)
-    assert hand_embed.shape == player_embed.shape == trick_embed.shape
-    private_inp = hand_embed + player_embed + trick_embed
+    trick = pad_seq(mapper(lambda x: x["trick"], private_inputs), dtype=torch.int8)
+    turn = pad_seq(mapper(lambda x: x["turn"], private_inputs), dtype=torch.int8)
 
-    valid_actions_inp = padded_tensor(
-        mapper(lambda x: x, valid_actions), dtype=torch.int8
+    valid_actions_arr: torch.Tensor = pad_seq(
+        mapper(lambda x: pad_cards(x), valid_actions), dtype=torch.int8
     )
 
-    return (hist_inp, private_inp, valid_actions_inp)
+    return dict(
+        hist=dict(
+            player_idxs=hist_player_idxs,
+            tricks=hist_tricks,
+            cards=hist_cards,
+            turns=hist_turns,
+        ),
+        private=dict(
+            hand=hand,
+            player_idx=player_idx,
+            trick=trick,
+            turn=turn,
+        ),
+        valid_actions=valid_actions_arr,
+        seq_lengths=seq_lengths,
+    )

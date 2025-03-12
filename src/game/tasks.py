@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Literal, cast, get_args
+from typing import TYPE_CHECKING, Callable, Literal, cast, get_args, override
 
 from .settings import Settings
 from .types import TO_SUIT_NUM, Card
@@ -36,9 +36,11 @@ class TrickCond(Condition):
     trick: int
     no: bool = False
 
+    @override
     def reset(self):
         self.status = "unresolved"
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -47,6 +49,7 @@ class TrickCond(Condition):
             won_trick = state.trick_winner == self.player
             self.status = "success" if won_trick == (not self.no) else "fail"
 
+    @override
     def on_end(self):
         assert self.status != "unresolved"
 
@@ -55,9 +58,11 @@ class TrickCond(Condition):
 class CardCond(Condition):
     card: Card
 
+    @override
     def reset(self):
         self.status = "unresolved"
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -67,6 +72,7 @@ class CardCond(Condition):
         ):
             self.status = "success"
 
+    @override
     def on_end(self):
         if self.status != "success":
             self.status = "fail"
@@ -81,6 +87,7 @@ class CumTrickCond(Condition):
     num_other_tricks_won: int = 0
     num_other_tricks_won_per_player: list[int] = field(default_factory=list)
 
+    @override
     def reset(self):
         self.status = "unresolved"
         self.num_tricks_won = 0
@@ -91,6 +98,7 @@ class CumTrickCond(Condition):
         else:
             self.num_other_tricks_won = 0
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -109,6 +117,7 @@ class CumTrickCond(Condition):
             else:
                 assert isinstance(self.num_tricks, int)
 
+    @override
     def on_end(self):
         if isinstance(self.num_tricks, int):
             num_other_tricks_won = self.num_tricks
@@ -145,11 +154,13 @@ class CumCardCond(Condition):
     cards_won: int = 0
     other_cards_won: int = 0
 
+    @override
     def reset(self):
         self.status = "unresolved"
         self.cards_won = 0
         self.other_cards_won = 0
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -164,6 +175,7 @@ class CumCardCond(Condition):
                     1 for card, _ in state.active_cards if self.other_card_filter(card)
                 )
 
+    @override
     def on_end(self):
         compare_value = (
             self.num_cards if self.num_cards is not None else self.other_cards_won
@@ -179,9 +191,11 @@ class CumCardCond(Condition):
 class WithCond(Condition):
     card_filter: CardFilter
 
+    @override
     def reset(self):
         self.status = "unresolved"
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -194,6 +208,7 @@ class WithCond(Condition):
             if self.card_filter(player_card):
                 self.status = "success"
 
+    @override
     def on_end(self):
         if self.status != "success":
             self.status = "fail"
@@ -206,10 +221,12 @@ class SweepCond(Condition):
     # Track cards won per suit
     cards_won_per_suit: dict[int, int] = field(default_factory=dict)
 
+    @override
     def reset(self):
         self.status = "unresolved"
         self.cards_won_per_suit = {i: 0 for i in range(self.settings.num_side_suits)}
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -220,6 +237,7 @@ class SweepCond(Condition):
                 if not card.is_trump:
                     self.cards_won_per_suit[card.suit] += 1
 
+    @override
     def on_end(self):
         num_sweeps = sum(
             x == self.settings.side_suit_length
@@ -238,10 +256,12 @@ class ConsecCond(Condition):
     def __post_init__(self):
         assert self.num_consec >= 2
 
+    @override
     def reset(self):
         self.status = "unresolved"
         self.won_tricks = set()
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -249,6 +269,7 @@ class ConsecCond(Condition):
         if state.trick_winner == self.player:
             self.won_tricks.add(state.trick)
 
+    @override
     def on_end(self):
         cur_consec_start, cur_consec_end = None, None
         best_consec_start, best_consec_end = None, None
@@ -283,9 +304,11 @@ class SumCond(Condition):
     direction: Direction
     sum: int
 
+    @override
     def reset(self):
         self.status = "unresolved"
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -295,6 +318,7 @@ class SumCond(Condition):
             if compare_dir(trick_sum, self.sum, self.direction):
                 self.status = "success"
 
+    @override
     def on_end(self):
         if self.status != "success":
             self.status = "fail"
@@ -304,9 +328,11 @@ class SumCond(Condition):
 class NoLeadCond(Condition):
     suits: list[int]
 
+    @override
     def reset(self):
         self.status = "unresolved"
 
+    @override
     def on_trick_end(self, state: State):
         if self.status != "unresolved":
             return
@@ -315,6 +341,7 @@ class NoLeadCond(Condition):
         if state.leader == self.player and state.active_cards[0][0].suit in self.suits:
             self.status = "fail"
 
+    @override
     def on_end(self):
         if self.status == "unresolved":
             self.status = "success"
@@ -494,7 +521,13 @@ def parse_token(token: str, settings: Settings, player: int) -> Condition:
 class Task:
     def __init__(self, formula: str, desc: str = ""):
         self.formula = formula
-        self.desc = desc
+        self.desc = desc or formula
+
+    def __str__(self):
+        return self.desc
+
+    def __repr__(self):
+        return f"Task({self.desc})"
 
 
 class AssignedTask(Task):
