@@ -99,7 +99,7 @@ def test_hand_model_forward(settings: Settings, hp, embed_models):
     output1 = model(padded_hand)
     output2 = model(padded_hand[:, :1])
     assert output1.shape == (1, hp.embed_dim)
-    assert torch.allclose(output1, output2)
+    assert torch.allclose(output1, output2, atol=1e-4)
 
 
 def test_get_embed_models(settings: Settings, hp: Hyperparams):

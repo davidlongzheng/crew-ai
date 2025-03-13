@@ -2,7 +2,7 @@ import pytest
 from torchrl.envs import check_env_specs
 
 from ...game.settings import easy_settings
-from .. import environment
+from ..environment import CrewEnv, get_torchrl_env
 
 
 @pytest.fixture
@@ -12,34 +12,30 @@ def settings():
 
 @pytest.fixture
 def env(settings):
-    return environment.env(settings)
+    return CrewEnv(settings)
 
 
 @pytest.fixture
 def torchrl_env(settings):
-    return environment.get_torchrl_env(settings)
+    return get_torchrl_env(settings=settings, randomize_invalid_actions=True)
 
 
 def test_rollout(env, settings):
-    env.reset(seed=42)
-    num_iters = 0
-    for agent in env.agent_iter():
-        num_iters += 1
-        observation, reward, termination, truncation, _ = env.last()
-        assert not truncation
+    obs, _ = env.reset(seed=42)
 
-        if termination or truncation:
+    num_steps = 0
+    while True:
+        action = env.action_space.sample(obs["action_mask"])
+        obs, reward, terminated, truncated, _ = env.step(action)
+        num_steps += 1
+        assert not truncated
+
+        if terminated:
             assert reward > 0
-            action = None
+            break
         else:
             assert reward == 0
-            mask = observation["action_mask"]
-            # this is where you would insert your policy
-            action = env.action_space(agent).sample(mask)
-
-        env.step(action)
-    env.close()
-    assert num_iters == settings.num_players * (settings.num_tricks + 1)
+    assert num_steps == settings.num_players * settings.num_tricks
 
 
 def test_torchrl_env(torchrl_env):

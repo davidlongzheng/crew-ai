@@ -42,7 +42,6 @@ def featurize(
         if non_feature_dims == 2:
             return pad_sequence(
                 [torch.tensor(x, dtype=dtype, device=device) for x in inp],
-                batch_first=True,
             )
         return torch.tensor(inp, dtype=dtype, device=device)
 

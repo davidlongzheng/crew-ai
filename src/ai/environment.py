@@ -1,12 +1,12 @@
 import functools
+import random
 from typing import override
 
-import gymnasium
+import gym
 import numpy as np
-from gymnasium.spaces import Box, Dict, Discrete
-from pettingzoo import AECEnv
-from pettingzoo.utils import wrappers
-from torchrl.envs import PettingZooWrapper
+from gym.spaces import Box, Dict, Discrete
+from gym.wrappers import OrderEnforcing
+from torchrl.envs import GymWrapper
 
 from ..game.engine import Engine
 from ..game.settings import Settings
@@ -20,50 +20,33 @@ def card_to_arr(x: Card):
     return [x.rank - 1, x.suit]
 
 
-def get_torchrl_env(settings, render_mode=None):
-    return PettingZooWrapper(
-        env=env(settings, render_mode=render_mode),
-        use_mask=True,
-        group_map={"players": [f"player_{i}" for i in range(settings.num_players)]},
+def get_torchrl_env(device=None, **kwargs):
+    return GymWrapper(
+        env=CrewEnv(**kwargs),
+        device=device,
     )
 
 
-def env(settings, render_mode=None):
-    """
-    The env function often wraps the environment in wrappers by default.
-    You can find full documentation for these methods
-    elsewhere in the developer documentation.
-    """
-    internal_render_mode = render_mode if render_mode != "ansi" else "human"
-    env = raw_env(settings, render_mode=internal_render_mode)
-    # This wrapper is only for environments which print results to the terminal
-    if render_mode == "ansi":
-        env = wrappers.CaptureStdoutWrapper(env)
-    # this wrapper helps error handling for discrete action spaces
-    env = wrappers.AssertOutOfBoundsWrapper(env)
-    # Provides a wide vareity of helpful user errors
-    # Strongly recommended
-    env = wrappers.OrderEnforcingWrapper(env)
-    return env
+def get_env(**kwargs):
+    return OrderEnforcing(CrewEnv(**kwargs))
 
 
-class raw_env(AECEnv):
-    metadata = {"render_modes": ["human"], "name": ENV_NAME}
+class CrewEnv(gym.Env):
+    metadata = {"render_modes": ["human"], "render_fps": 4}
 
-    def __init__(self, settings: Settings, render_mode=None):
+    def __init__(
+        self, settings: Settings, render_mode=None, randomize_invalid_actions=True
+    ):
         super().__init__()
-        self.possible_agents = [f"player_{i}" for i in range(settings.num_players)]
-        self.player_idx_map = {x: i for i, x in enumerate(self.possible_agents)}
         self.settings = settings
 
-        self.engine = Engine(settings=settings)
-        self.public_history: list[StrMap] = []
         self.render_mode = render_mode
+        self.randomize_invalid_actions = randomize_invalid_actions
 
-    @override
-    @functools.lru_cache(maxsize=None)
-    def observation_space(self, agent):
-        return Dict(
+        self.engine = Engine(settings=settings)
+        self.public_history: StrMap = {}
+
+        self.observation_space = Dict(
             {
                 "public_history": Dict(
                     {
@@ -150,11 +133,8 @@ class raw_env(AECEnv):
                 ),
             }
         )
-
-    @override
-    @functools.lru_cache(maxsize=None)
-    def action_space(self, agent):
-        return Discrete(self.settings.max_hand_size)
+        self.action_space = Discrete(self.settings.max_hand_size)
+        self.info: StrMap = {}
 
     @override
     def render(self):
@@ -162,12 +142,6 @@ class raw_env(AECEnv):
         Renders the environment. In human mode, it can print to terminal, open
         up a graphical window, or open up some other display that a human can see and understand.
         """
-        if self.render_mode is None:
-            gymnasium.logger.warn(
-                "You are calling render method without specifying any render mode."
-            )
-            return
-
         return str(self.engine.state)
 
     @property
@@ -231,14 +205,11 @@ class raw_env(AECEnv):
             "action_mask": action_mask,
         }
 
-    @override
-    def observe(self, agent):
+    def get_obs(self):
         if self.engine.state.phase == "end":
             return self.dummy_obs
 
         assert self.engine.state.phase == "play"
-        if self.player_idx_map[agent] != self.cur_player_idx:
-            return self.dummy_obs
 
         private_inputs = {
             "hand": self.cur_hand,
@@ -266,15 +237,15 @@ class raw_env(AECEnv):
     def reset(self, seed=None, options=None):
         self.engine.reset_state(seed=seed)
         self.public_history = self.dummy_public_history
-        self.agents = self.possible_agents[:]
-        self.rewards = {agent: 0 for agent in self.agents}
-        self._cumulative_rewards = {agent: 0 for agent in self.agents}
-        self.terminations = {agent: False for agent in self.agents}
-        self.truncations = {agent: False for agent in self.agents}
-        self.infos = {agent: {} for agent in self.agents}
-        self.agent_selection = self.agents[self.cur_player_idx]
+        self.info = {"num_invalid_actions": 0}
 
-    def on_game_end(self):
+        if self.render_mode == "human":
+            self.render()
+
+        return self.get_obs(), self.info
+
+    def get_reward(self):
+        assert self.engine.state.phase == "end"
         num_success_pp = [
             sum(x.status == "success" for x in tasks)
             for tasks in self.engine.state.assigned_tasks
@@ -284,33 +255,26 @@ class raw_env(AECEnv):
         num_tasks = sum(num_tasks_pp)
         full_bonus = num_tasks if num_success_pp == num_tasks else 0
 
-        for agent, info in self.infos.items():
-            player_idx = self.player_idx_map[agent]
+        self.info["num_success_tasks"] = []
+        self.info["num_tasks"] = []
+        for player_idx in range(self.settings.num_players):
             player = (
                 self.engine.state.captain + player_idx
             ) % self.settings.num_players
-            self.rewards[agent] = (
-                0.5 * num_success + 0.5 * num_success_pp[player] + full_bonus
-            )
-            info["num_success_tasks"] = num_success_pp[player]
-            info["num_tasks"] = num_tasks_pp[player]
+            self.info["num_success_tasks"].append(num_success_pp[player])
+            self.info["num_tasks"].append([player])
 
-        self.terminations = {agent: True for agent in self.agents}
+        return num_success + full_bonus
 
     @override
     def step(self, action):
-        if (
-            self.terminations[self.agent_selection]
-            or self.truncations[self.agent_selection]
-        ):
-            self._was_dead_step(action)
-            return
-
-        agent = self.agent_selection
-        assert self.player_idx_map[agent] == self.cur_player_idx
         assert self.engine.state.phase == "play"
+        valid_actions = self.engine.valid_actions()
+        if self.randomize_invalid_actions and action >= len(valid_actions):
+            self.info["num_invalid_actions"] += 1
+            action = random.randint(0, len(valid_actions) - 1)
 
-        action_obj = self.engine.valid_actions()[action]
+        action_obj = valid_actions[action]
 
         self.public_history = {
             "trick": self.engine.state.trick,
@@ -321,13 +285,13 @@ class raw_env(AECEnv):
         self.engine.move(action_obj)
 
         if self.engine.state.phase == "end":
-            self.on_game_end()
-            self.agent_selection = self.agents[0]
+            terminated = True
+            reward = self.get_reward()
         else:
-            self.agent_selection = self.agents[self.cur_player_idx]
+            terminated = False
+            reward = 0.0
 
-        self._cumulative_rewards[self.agent_selection] = 0
-
-        self._accumulate_rewards()
         if self.render_mode == "human":
             self.render()
+
+        return self.get_obs(), reward, terminated, False, self.info

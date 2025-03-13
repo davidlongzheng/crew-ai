@@ -33,7 +33,6 @@ class HistoryModel(nn.Module):
             input_size=embed_dim,
             hidden_size=hidden_dim,
             num_layers=num_layers,
-            batch_first=True,
             dropout=(dropout if num_layers > 1 else 0.0),
         )
         self.output_dim = output_dim
@@ -65,16 +64,14 @@ class HistoryModel(nn.Module):
             x = self.layer_norm(x)
 
         if seq_lengths is not None:
-            x = pack_padded_sequence(
-                x, seq_lengths, batch_first=True, enforce_sorted=False
-            )
+            x = pack_padded_sequence(x, seq_lengths, enforce_sorted=False)
         elif use_state:
             x = x.unsqueeze(dim=0)
 
         x, state = self.lstm(x, self.state)
 
         if seq_lengths is not None:
-            x, _ = pad_packed_sequence(x, batch_first=True, padding_value=0.0)
+            x, _ = pad_packed_sequence(x, padding_value=0.0)
         elif use_state:
             x = x.squeeze(dim=0)
 

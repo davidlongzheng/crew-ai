@@ -175,7 +175,6 @@ def train(
     def pad_seq(inp, *, dtype=None):
         return pad_sequence(
             [torch.tensor(x, dtype=dtype, device=device) for x in inp],
-            batch_first=True,
         )
 
     for epoch in range(hp.num_epochs):
