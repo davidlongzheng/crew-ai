@@ -77,26 +77,39 @@ def test_history_model_forward(hp, models, inps, one_step_inp):
     assert hist_model.state is None
 
 
-def test_decision_model_forward(hp, models, inps):
-    decision_model = models["decision"]
-    decision_model.eval()
+def test_backbone_model_forward(hp, models, inps):
+    backbone_model = models["backbone"]
+    backbone_model.eval()
 
-    output = decision_model(
+    output = backbone_model(
         inps["hist"], inps["private"], seq_lengths=inps["seq_lengths"]
     )
-    assert len(output.shape) == 3 and output.shape[-1] == hp.decision_output_dim
+    assert len(output.shape) == 3 and output.shape[-1] == hp.backbone_output_dim
 
 
-def test_pv_model_forward(hp, models, settings, inps):
-    pv_model = models["pv"]
-    pv_model.eval()
+def test_policy_model_forward(hp, models, settings, inps):
+    policy_model = models["policy"]
+    policy_model.eval()
 
     inps["valid_actions"][:, :, -1] = -1  # Make last action invalid
 
-    probs, value = pv_model(
+    log_probs = policy_model(
         inps,
     )
-    assert len(probs.shape) == 3
+    probs = torch.exp(log_probs)
+    assert len(log_probs.shape) == 3
     assert torch.allclose(probs.sum(dim=-1), torch.tensor(1.0))
     assert torch.allclose(probs[..., -1], torch.tensor(0.0))
+
+
+def test_value_head_forward(hp, models, settings, inps):
+    backbone_model = models["backbone"]
+    backbone_model.eval()
+    value_head = models["value_head"]
+    value_head.eval()
+
+    output = backbone_model(
+        inps["hist"], inps["private"], seq_lengths=inps["seq_lengths"]
+    )
+    value = value_head(output)
     assert len(value.shape) == 2

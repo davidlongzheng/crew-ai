@@ -3,6 +3,8 @@ from __future__ import absolute_import, annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import click
+
 from ..lib.utils import coerce_string
 from .types import TRUMP_SUIT_NUM
 
@@ -48,14 +50,6 @@ class Settings:
     def num_suits(self):
         return self.num_side_suits + self.use_trump_suit
 
-    @staticmethod
-    def parse_str(txt):
-        kwargs = dict([x.split("=") for x in txt.split(",")])
-        for k, v in kwargs.items():
-            kwargs[k] = coerce_string(v)
-
-        return Settings(**kwargs)
-
 
 def easy_tasks():
     from .tasks import Task
@@ -64,11 +58,29 @@ def easy_tasks():
     return [Task(f, "") for f in defs]
 
 
-def easy_settings():
+def easy_settings(**kwargs):
     return Settings(
         num_players=3,
         side_suit_length=4,
         trump_suit_length=2,
         use_signals=False,
         tasks=easy_tasks(),
+        **kwargs,
     )
+
+
+class SettingsType(click.ParamType):
+    name = "Settings"
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, Settings):
+            return value
+
+        kwargs = dict([x.split("=") for x in value.split(",")])
+        for k, v in kwargs.items():
+            kwargs[k] = coerce_string(v)
+
+        return easy_settings(**kwargs)
+
+
+SETTINGS_TYPE = SettingsType()

@@ -1,4 +1,5 @@
 import torch
+from tensordict import TensorDict
 from torch.nn.utils.rnn import pad_sequence
 
 from ..game.settings import Settings
@@ -16,8 +17,8 @@ def featurize(
 ) -> StrMap:
     """Takes in a set of nn inputs and featurizes the inputs.
 
-    Inputs to the func are either F, (T, F), or (N, T, F).
-    You should set non_feature_dims=0,1,2 respectively.
+    Inputs to the func are either F, (T, F), (N, F), or (N, T, F).
+    You should set non_feature_dims=0,1,1,2 respectively.
     """
 
     assert 0 <= non_feature_dims <= 2
@@ -42,6 +43,7 @@ def featurize(
         if non_feature_dims == 2:
             return pad_sequence(
                 [torch.tensor(x, dtype=dtype, device=device) for x in inp],
+                batch_first=True,
             )
         return torch.tensor(inp, dtype=dtype, device=device)
 
@@ -76,14 +78,14 @@ def featurize(
         mapper(lambda x: pad_cards(x), valid_actions), dtype=torch.int8
     )
 
-    return dict(
-        hist=dict(
+    return TensorDict(
+        hist=TensorDict(
             player_idxs=hist_player_idxs,
             tricks=hist_tricks,
             cards=hist_cards,
             turns=hist_turns,
         ),
-        private=dict(
+        private=TensorDict(
             hand=hand,
             player_idx=player_idx,
             trick=trick,

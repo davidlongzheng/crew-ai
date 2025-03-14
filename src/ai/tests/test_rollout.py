@@ -24,7 +24,7 @@ def test_rollout_deterministic():
     assert result1["private_inputs"] == result2["private_inputs"]
     assert result1["public_history"] == result2["public_history"]
     assert result1["valid_actions"] == result2["valid_actions"]
-    assert result1["targets"] == result2["targets"]
+    assert result1["actions"] == result2["actions"]
     assert result1["rewards_pp"] == result2["rewards_pp"]
 
 
@@ -49,7 +49,7 @@ def test_rollout_structure():
     assert isinstance(result["private_inputs"], list)
     assert isinstance(result["public_history"], list)
     assert isinstance(result["valid_actions"], list)
-    assert isinstance(result["targets"], list)
+    assert isinstance(result["actions"], list)
     assert isinstance(result["rewards_pp"], list)
 
     # Check rewards length matches number of players
@@ -95,9 +95,9 @@ def test_rollout_valid_card_tuples():
     for valid_action_list in result["valid_actions"]:
         assert all(is_valid_card_tuple(card) for card in valid_action_list)
 
-    # Check targets
-    for target in result["targets"]:
-        assert isinstance(target, int)
+    # Check action
+    for action in result["actions"]:
+        assert isinstance(action, int)
 
 
 def test_rollout_rewards_range():
