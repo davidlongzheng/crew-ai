@@ -59,7 +59,7 @@ def test_history_model_forward(hp, models, inps, one_step_inp):
     assert len(output.shape) == 3 and output.shape[-1] == hp.hist_output_dim
 
     # Test inference mode (no batch)
-    hist_model.reset_state()
+    hist_model.start_single_step()
     assert hist_model.state is None
 
     output = hist_model(one_step_inp["hist"], seq_lengths=one_step_inp["seq_lengths"])
@@ -73,7 +73,7 @@ def test_history_model_forward(hp, models, inps, one_step_inp):
     assert hist_model.state is not None
     assert not torch.allclose(state1[0], hist_model.state[0])
 
-    hist_model.reset_state()
+    hist_model.stop_single_step()
     assert hist_model.state is None
 
 
