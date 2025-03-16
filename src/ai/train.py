@@ -11,14 +11,9 @@ from typing import Any, cast
 import click
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 from loguru import logger
 from tensordict import TensorDict
-from tensordict.nn import (
-    TensorDictModule,
-)
-from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -26,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from ..game.settings import SETTINGS_TYPE, Settings, easy_settings
 from .featurizer import featurize
 from .hyperparams import HP_TYPE, Hyperparams
-from .models import PolicyModel, get_models, make_td_modules
+from .models import PolicyModel, ValueModel, get_models
 from .rollout import do_batch_rollout
 from .summary_writer import CustomSummaryWriter
 
@@ -41,8 +36,15 @@ def get_device():
     )
 
 
-def create_optim(module, lr: float, weight_decay: float):
-    named_params = list(module.named_parameters())
+def create_optim(models, lr: float, weight_decay: float):
+    named_params = []
+    seen_params = set()
+    for model in models:
+        for name, p in model.named_parameters():
+            if p in seen_params:
+                continue
+            named_params.append((name, p))
+            seen_params.add(p)
     no_wd_params = [
         p for name, p in named_params if "bias" in name or "layer_norm" in name
     ]
@@ -78,108 +80,48 @@ def gae_gamma_discount(num_moves, gae_gamma, device):
     return gae_gamma ** torch.arange(num_moves - 1, -1, -1).to(device)
 
 
-def flat_to_pp_tensor(values, player_idxs):
-    """Convert a tensor of shape (N, T) to a shape of (N, P, M) using
-    a player_idx tensor of shape (N, T).
-    where P = number of players, and M = most number of moves made by
-    a single player.
-    """
-    N, T = values.shape
-    P = player_idxs.max().item() + 1
-    assert T % P == 0
-    M = T // P
-
-    player_idxs = player_idxs.type(torch.LongTensor)
-
-    # Let's assume no padding for now and not handle it.
-    assert (player_idxs >= 0).all()
-
-    # Shape (N, T, P)
-    one_hot = F.one_hot(player_idxs, num_classes=P)
-
-    # Shape (N, T, P)
-    cumsum = one_hot.cumsum(dim=1)
-
-    # Shape (N, T)
-    # Gets which player move M for a given (N, T)
-    ranks = (cumsum * one_hot).sum(dim=-1) - 1
-
-    pp_values = torch.zeros(N, P, M, device=values.device, dtype=values.dtype)
-    n_idx = torch.arange(N, device=values.device)[:, None].expand(N, T).reshape(-1)
-    p_idx = player_idxs.reshape(-1)
-    m_idx = ranks.reshape(-1)
-    pp_values[n_idx, p_idx, m_idx] = values.reshape(-1)
-
-    return pp_values
-
-
-def pp_to_flat_tensor(pp_values, player_idxs):
-    """Reverse of flat_to_pp_tensor()"""
-    # Let's assume no padding for now and not handle it.
-    assert (player_idxs >= 0).all()
-    N, P, M = pp_values.shape
-    _, T = player_idxs.shape
-    assert P * M == T
-
-    player_idxs = player_idxs.type(torch.LongTensor)
-
-    # (N, T, P)
-    one_hot = F.one_hot(player_idxs, num_classes=P)
-    # (N, T, P)
-    cumsum = one_hot.cumsum(dim=1)
-    ranks = (cumsum * one_hot).sum(dim=-1) - 1
-
-    n_idx = torch.arange(N, device=pp_values.device)[:, None].expand(N, T).reshape(-1)
-    p_idx = player_idxs.reshape(-1)
-    r_idx = ranks.reshape(-1)
-
-    values = pp_values[n_idx, p_idx, r_idx].reshape(N, T)
-    return values
-
-
 def compute_advantage(
     td: TensorDict,
     gae_gamma: float,
     gae_lambda: float,
-    value_module: TensorDictModule,
+    value_model: ValueModel,
 ):
     with torch.no_grad():
-        value_module(td)
+        td["values"] = value_model(td["inps"])
 
-    player_idxs = td["inps"]["private"]["player_idx"]
-    pp_values = flat_to_pp_tensor(td["values"], player_idxs)
-    num_moves = pp_values.shape[2]
-    fut_pp_values = gae_gamma * torch.roll(pp_values, shifts=-1, dims=-1)
-    fut_pp_values[..., -1] = td["rewards"]
+    values = td["values"]
+    T = values.shape[-1]
+    # only handle this case if it comes to that.
+    assert (td["inps"]["seq_lengths"] == T).all()
+    fut_values = gae_gamma * torch.roll(values, shifts=-1, dims=-1)
+    fut_values[..., -1] = td["rewards"]
     # resids here refers to Bellman TD residuals.
-    pp_resids = fut_pp_values - pp_values
-    pp_advantages = pp_resids @ gae_advantage_discount(
-        num_moves, gae_gamma, gae_lambda, td.device, pp_resids.dtype
+    resids = fut_values - values
+    advantages = resids @ gae_advantage_discount(
+        T, gae_gamma, gae_lambda, td.device, resids.dtype
     )
-    pp_value_targets = torch.einsum(
-        "np,m->npm", td["rewards"], gae_gamma_discount(num_moves, gae_gamma, td.device)
+    value_targets = torch.einsum(
+        "n,t->nt", td["rewards"], gae_gamma_discount(T, gae_gamma, td.device)
     )
-    advantages = pp_to_flat_tensor(pp_advantages, player_idxs)
-    std_advantages = (advantages - advantages.mean()) / advantages.std()
+    norm_advantages = (advantages - advantages.mean()) / advantages.std()
 
     td["unnorm_advantages"] = advantages
-    td["advantages"] = std_advantages
-    td["value_targets"] = pp_to_flat_tensor(pp_value_targets, player_idxs)
+    td["advantages"] = norm_advantages
+    td["value_targets"] = value_targets
 
 
-def compute_loss(
+def compute_policy_loss(
     td,
-    mse_criterion,
     ppo_clip_ratio,
-    value_coef,
     entropy_coef,
 ):
     actions = td["actions"]
-    values = td["values"]
     orig_log_probs = td["orig_log_probs"]
     log_probs = td["log_probs"]
     advantages = td["advantages"]
-    value_targets = td["value_targets"]
+
+    # only handle this case if it comes to that.
+    assert (td["inps"]["seq_lengths"] == advantages.shape[1]).all()
 
     orig_action_log_probs = torch.gather(
         orig_log_probs, dim=-1, index=actions.unsqueeze(-1)
@@ -197,13 +139,12 @@ def compute_loss(
             (1 - ppo_clip_ratio) * advantages,
         )
 
-    policy_loss = torch.mean(
+    ppo_loss = torch.mean(
         -torch.minimum(
             torch.exp(action_log_probs - orig_action_log_probs) * advantages,
             g(advantages),
         )
     )
-    value_loss = value_coef * mse_criterion(values, value_targets)
     eps = np.log(1e-8)
     clamped_log_probs = log_probs.clamp(min=eps)
     clamped_orig_log_probs = orig_log_probs.clamp(min=eps)
@@ -217,9 +158,31 @@ def compute_loss(
             dim=-1,
         )
     )
-    combined_loss = policy_loss + value_loss + entropy_loss
+    combined_loss = ppo_loss + entropy_loss
 
-    return combined_loss, policy_loss, value_loss, entropy_loss, kl_loss
+    return {
+        "loss": combined_loss,
+        "ppo_loss": ppo_loss,
+        "entropy_loss": entropy_loss,
+        "kl_loss": kl_loss,
+    }
+
+
+def compute_value_loss(
+    td,
+):
+    values = td["values"]
+    # only handle this case if it comes to that.
+    assert (td["inps"]["seq_lengths"] == values.shape[1]).all()
+    value_targets = td["value_targets"]
+    loss = torch.mean((values - value_targets) ** 2)
+    ret = {"loss": loss}
+
+    loss_pt = torch.mean((values - value_targets) ** 2, dim=0)
+    ret["loss_t0"] = loss_pt[0]
+    ret["loss_t-1"] = loss_pt[-1]
+
+    return ret
 
 
 class Timer:
@@ -238,64 +201,136 @@ class Timer:
         elapsed = time.time() - self.times[key]
         self.writer.add_scalar(f"times/{key}_time", elapsed, global_step)
         if self.log_first and key not in self.has_logged:
-            logger.info(f"{key}_time: {elapsed:.3}s")
+            logger.info(f"{key}_time: {elapsed:.3f}s")
             self.has_logged.add(key)
         self.times[key] = None
 
 
 def train_one_epoch(
     mode,
+    network_type,
     data_loader,
     hp,
     optimizer,
-    pv_module,
-    mse_criterion,
+    model,
 ):
-    (
-        running_combined_loss,
-        running_policy_loss,
-        running_value_loss,
-        running_entropy_loss,
-        running_kl_loss,
-    ) = 0, 0, 0, 0, 0
+    running_losses = Counter()
     num_steps_in_epoch = 0
     for td_batch in data_loader:
+        out_key = "log_probs" if network_type == "policy" else "values"
         if mode == "train":
             optimizer.zero_grad()
-            pv_module(td_batch)
+            td_batch[out_key] = model(td_batch["inps"])
         else:
             with torch.no_grad():
-                pv_module(td_batch)
-        combined_loss, policy_loss, value_loss, entropy_loss, kl_loss = compute_loss(
-            td_batch,
-            mse_criterion,
-            hp.ppo_clip_ratio,
-            hp.value_coef,
-            hp.entropy_coef,
-        )
+                td_batch[out_key] = model(td_batch["inps"])
+        if network_type == "policy":
+            losses = compute_policy_loss(
+                td_batch,
+                hp.ppo_clip_ratio,
+                hp.entropy_coef,
+            )
+        else:
+            losses = compute_value_loss(
+                td_batch,
+            )
+
         if mode == "train":
-            combined_loss.backward()
+            losses["loss"].backward()
             optimizer.step()
-        running_combined_loss += combined_loss.item()
-        running_policy_loss += policy_loss.item()
-        running_value_loss += value_loss.item()
-        running_entropy_loss += entropy_loss.item()
-        running_kl_loss += kl_loss.item()
+
+        for k, v in losses.items():
+            running_losses[k] += v.item()
+
         num_steps_in_epoch += 1
-    final_combined_loss = running_combined_loss / num_steps_in_epoch
-    final_policy_loss = running_policy_loss / num_steps_in_epoch
-    final_value_loss = running_value_loss / num_steps_in_epoch
-    final_entropy_loss = running_entropy_loss / num_steps_in_epoch
-    final_kl_loss = running_kl_loss / num_steps_in_epoch
+
+    losses = {}
+    for k, v in running_losses.items():
+        losses[k] = v / num_steps_in_epoch
 
     return (
-        final_combined_loss,
-        final_policy_loss,
-        final_value_loss,
-        final_entropy_loss,
-        final_kl_loss,
+        losses,
         num_steps_in_epoch,
     )
+
+
+def train_one_round(
+    round,
+    policy_model,
+    value_model,
+    td,
+    hp,
+    optimizer,
+    gc,
+    writer,
+    log_epoch,
+):
+    train_data_loader = DataLoader(
+        td[: hp.num_train_rollouts_per_round],
+        hp.batch_size,
+        shuffle=True,
+        drop_last=True,
+        collate_fn=lambda x: x,
+    )
+    val_data_loader = DataLoader(
+        td[hp.num_train_rollouts_per_round :],
+        hp.batch_size,
+        shuffle=False,
+        drop_last=False,
+        collate_fn=lambda x: x,
+    )
+    for network_type in ["value"]:  # nocommit
+        logger.info(f"Training {network_type} network")
+        model = policy_model if network_type == "policy" else value_model
+        for epoch in range(hp.num_epochs_per_round):
+            if log_epoch:
+                logger.info(f"Epoch {epoch}")
+            for mode in ["train", "val"]:
+                if mode == "train":
+                    model.train()
+                    data_loader = train_data_loader
+                else:
+                    model.eval()
+                    data_loader = val_data_loader
+                (
+                    losses,
+                    num_steps_in_epoch,
+                ) = train_one_epoch(
+                    mode=mode,
+                    network_type=network_type,
+                    data_loader=data_loader,
+                    hp=hp,
+                    optimizer=optimizer,
+                    model=model,
+                )
+                if mode == "train":
+                    gc[f"{network_type}_num_steps"] += num_steps_in_epoch
+                    gc[f"{network_type}_num_epochs"] += 1
+
+                for k, v in losses.items():
+                    writer.add_scalar(
+                        f"loss/{network_type}_{k}_{mode}",
+                        v,
+                        gc[f"{network_type}_num_epochs"],
+                    )
+
+                if mode == "train":
+                    gc[f"{network_type}_num_rollouts"] += (
+                        hp.num_train_rollouts_per_round
+                    )
+                    writer.add_scalar(
+                        "counter/num_rollouts",
+                        gc[f"{network_type}_num_rollouts"],
+                        gc[f"{network_type}_num_epochs"],
+                    )
+                    writer.add_scalar(
+                        "counter/round", round, gc[f"{network_type}_num_epochs"]
+                    )
+                    writer.add_scalar(
+                        "counter/num_steps",
+                        gc[f"{network_type}_num_steps"],
+                        gc[f"{network_type}_num_epochs"],
+                    )
 
 
 def get_train_data(
@@ -334,7 +369,7 @@ def get_train_data(
     )
     actions = pad_seq([x["actions"] for x in rollouts])
     orig_log_probs = pad_seq([x["log_probs"] for x in rollouts])
-    rewards = torch.tensor([x["rewards_pp"] for x in rollouts], device=device)
+    rewards = torch.tensor([x["reward"] for x in rollouts], device=device)
     frac_success = torch.tensor(
         [
             np.sum([y[0] for y in x["num_success_tasks_pp"]])
@@ -359,21 +394,19 @@ def get_train_data(
 def train(
     device: torch.device,
     policy_model: PolicyModel,
-    value_module: TensorDictModule,
-    pv_module: TensorDictModule,
+    value_model: ValueModel,
     optimizer: optim.Optimizer,
     settings: Settings,
     hp: Hyperparams,
     writer: SummaryWriter,
+    outdir: Path,
     td0_path: Path | None,
 ) -> None:
-    mse_criterion = nn.MSELoss()
-
     timer = Timer(writer, log_first=True)
     gc: Counter = Counter()
     for round in range(hp.num_rounds):
         logger.info(f"Round {round}")
-        pv_module.eval()
+        policy_model.eval()
 
         if round == 0 and td0_path and td0_path.exists():
             logger.info(f"Loading round=0 td from {td0_path}")
@@ -398,82 +431,24 @@ def train(
         writer.add_scalar("rewards/frac_success_mean", mean_frac_success, round)
 
         timer.start("advantage")
-        compute_advantage(td, hp.gae_gamma, hp.gae_lambda, value_module)
-        writer.add_scalar("rewards/value_mean", td["values"].mean(), round)
-        writer.add_scalar("rewards/value_std", td["values"].std(), round)
-        writer.add_scalar(
-            "rewards/value_target_mean", td["value_targets"].mean(), round
-        )
-        writer.add_scalar("rewards/value_target_std", td["value_targets"].std(), round)
-        writer.add_scalar(
-            "rewards/unnorm_advantage_mean", td["unnorm_advantages"].mean(), round
-        )
-        writer.add_scalar(
-            "rewards/unnorm_advantage_std", td["unnorm_advantages"].std(), round
-        )
+        compute_advantage(td, hp.gae_gamma, hp.gae_lambda, value_model)
+        for k in ["value", "value_target", "unnorm_advantage"]:
+            writer.add_scalar(f"rewards/{k}_mean", td[f"{k}s"].mean(), round)
+            writer.add_scalar(f"rewards/{k}_std", td[f"{k}s"].std(), round)
         timer.finish("advantage", round)
 
         timer.start("training")
-        train_data_loader = DataLoader(
-            td[: hp.num_train_rollouts_per_round],
-            hp.batch_size,
-            shuffle=True,
-            drop_last=True,
-            collate_fn=lambda x: x,
+        train_one_round(
+            round=round,
+            policy_model=policy_model,
+            value_model=value_model,
+            td=td,
+            hp=hp,
+            optimizer=optimizer,
+            gc=gc,
+            writer=writer,
+            log_epoch=(hp.num_rounds <= 5),
         )
-        val_data_loader = DataLoader(
-            td[hp.num_train_rollouts_per_round :],
-            hp.batch_size,
-            shuffle=False,
-            drop_last=False,
-            collate_fn=lambda x: x,
-        )
-        for epoch in range(hp.num_epochs_per_round):
-            for mode in ["train", "val"]:
-                if mode == "train":
-                    pv_module.train()
-                    data_loader = train_data_loader
-                else:
-                    pv_module.eval()
-                    data_loader = val_data_loader
-                (
-                    combined_loss,
-                    policy_loss,
-                    value_loss,
-                    entropy_loss,
-                    kl_loss,
-                    num_steps_in_epoch,
-                ) = train_one_epoch(
-                    mode=mode,
-                    data_loader=data_loader,
-                    hp=hp,
-                    optimizer=optimizer,
-                    pv_module=pv_module,
-                    mse_criterion=mse_criterion,
-                )
-                if mode == "train":
-                    gc["num_steps"] += num_steps_in_epoch
-                    gc["num_epochs"] += 1
-
-                sfx = "" if mode == "train" else f"_{mode}"
-                writer.add_scalar(
-                    f"loss/combined{sfx}", combined_loss, gc["num_epochs"]
-                )
-                writer.add_scalar(f"loss/policy{sfx}", policy_loss, gc["num_epochs"])
-                writer.add_scalar(f"loss/value{sfx}", value_loss, gc["num_epochs"])
-                writer.add_scalar(f"loss/entropy{sfx}", entropy_loss, gc["num_epochs"])
-                writer.add_scalar(f"loss/kl{sfx}", kl_loss, gc["num_epochs"])
-                if mode == "train":
-                    gc["num_rollouts"] += hp.num_train_rollouts_per_round
-                    writer.add_scalar(
-                        "counter/num_rollouts",
-                        gc["num_rollouts"],
-                        gc["num_epochs"],
-                    )
-                    writer.add_scalar("counter/round", round, gc["num_epochs"])
-                    writer.add_scalar(
-                        "counter/num_steps", gc["num_steps"], gc["num_epochs"]
-                    )
         timer.finish("training", round)
 
         writer.add_hparams(
@@ -483,11 +458,13 @@ def train(
                 if isinstance(v, (int, float, str, bool)) or v is None
             },
             metric_dict={
-                "metrics/mean_reward": mean_reward,
+                "metrics/reward_mean": mean_reward,
                 "metrics/frac_success": mean_frac_success,
             },
             global_step=round,
         )
+
+        (outdir / "keep").touch()
 
 
 @click.command()
@@ -527,10 +504,15 @@ def train(
     help="Must set --resume to run on existing outdir.",
 )
 @click.option(
-    "--td0_path",
+    "--td0-path",
     type=Path,
     default=None,
     help="Where to cache round=0 td for fast experimentation. kinda jank, consider deprecating in the future!",
+)
+@click.option(
+    "--autoindex-runs",
+    is_flag=True,
+    help="Auto-index new runs.",
 )
 def main(
     outdir: Path,
@@ -540,18 +522,34 @@ def main(
     seed: int,
     clean: bool,
     resume: bool,
+    autoindex_runs: bool,
     td0_path: Path | None,
 ) -> None:
     outdir = outdir.resolve()
-    if td0_path:
-        td0_path = td0_path.resolve()
-    if clean and outdir.exists():
+    if autoindex_runs:
+        max_run_idx = max(
+            [
+                int(x.name.split("_")[-1])
+                for x in outdir.glob("run_*")
+                if (x / "keep").exists()
+            ],
+            default=-1,
+        )
+        if clean or resume:
+            outdir = outdir / f"run_{max(max_run_idx, 0)}"
+        else:
+            outdir = outdir / f"run_{max_run_idx + 1}"
+
+    if outdir.exists() and (clean or not (outdir / "keep").exists()):
         logger.info(f"** Cleaning outdir {outdir} **")
         shutil.rmtree(outdir)
     if not resume and outdir.exists():
         raise Exception("Must set --clean or --resume to run on existing outdir.")
-    outdir.mkdir(exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
     logger.add(outdir / "train.log")
+
+    if td0_path:
+        td0_path = td0_path.resolve()
 
     logger.info("** Training Configuration **")
     logger.info(f"Settings: {settings}")
@@ -567,29 +565,26 @@ def main(
     for m in models.values():
         m.to(device)
     policy_model = cast(PolicyModel, models["policy"])
-
-    td_modules = make_td_modules(models)
-    value_module = td_modules["value"]
-    pv_module = td_modules["pv"]
-
-    optimizer = create_optim(pv_module, hp.lr, hp.weight_decay)
+    value_model = cast(ValueModel, models["value"])
+    optimizer = create_optim([policy_model, value_model], hp.lr, hp.weight_decay)
 
     logger.info("** Training **")
     with CustomSummaryWriter(str(outdir)) as writer:
         train(
             device,
             policy_model,
-            value_module,
-            pv_module,
+            value_model,
             optimizer,
             settings,
             hp,
             writer,
+            outdir,
             td0_path,
         )
 
 
 if __name__ == "__main__":
+    torch.autograd.set_detect_anomaly(True)
     from ipdb import launch_ipdb_on_exception
 
     with launch_ipdb_on_exception():

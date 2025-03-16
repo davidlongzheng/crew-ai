@@ -1,3 +1,5 @@
+import dataclasses
+import re
 from dataclasses import dataclass
 
 import click
@@ -32,7 +34,6 @@ class Hyperparams:
 
     # For loss function calculations
     ppo_clip_ratio: float = 0.2
-    value_coef: float = 1.0
     entropy_coef: float = 1e-4
     early_stop_kl: float = 0.05
 
@@ -42,23 +43,34 @@ class Hyperparams:
 
     # For embedding a hand from a set of card embeddings
     hand_hidden_dim: int = 32
+    hand_embed_dim: int = 32
     hand_num_hidden_layers: int = 1
     hand_use_layer_norm: bool = True
     hand_dropout: float = 0.1
 
+    # For embedding the global set of hands
+    hands_hidden_dim: int = 64
+    hands_embed_dim: int = 64
+    hands_num_hidden_layers: int = 1
+    hands_use_layer_norm: bool = True
+    hands_dropout: float = 0.1
+    hands_concat_inputs: bool = False
+
     # For public history LSTM
-    hist_hidden_dim: int = 16
-    hist_output_dim: int = 16
+    hist_hidden_dim: int = 32
+    hist_output_dim: int = 32
     hist_num_layers: int = 1
     hist_use_layer_norm: bool = True
     hist_dropout: float = 0.1
+    hist_concat_inputs: bool = False
 
     # For backbone MLP
-    backbone_hidden_dim: int = 16
+    backbone_hidden_dim: int = 32
     backbone_num_hidden_layers: int = 2
     backbone_output_dim: int = 16
     backbone_dropout: float = 0.1
-    backbone_use_layer_norm: bool = False
+    backbone_use_layer_norm: bool = True
+    backbone_concat_inputs: bool = False
 
     # For policy-value network
     policy_query_dim: int = 16  # Attention vector on policy output.
@@ -74,6 +86,20 @@ class HyperparamsType(click.ParamType):
         kwargs = dict([x.split("=") for x in value.split(",")])
         for k, v in kwargs.items():
             kwargs[k] = coerce_string(v)
+
+        fields = dataclasses.fields(Hyperparams)
+        for batch_alias, batch_regex in [
+            ("dropout", r"^.*dropout$"),
+            ("use_layer_norm", r"^.*use_layer_norm$"),
+            ("concat_inputs", r"^.*concat_inputs$"),
+        ]:
+            if batch_alias not in kwargs:
+                continue
+
+            for field in fields:
+                if re.match(batch_regex, field.name):
+                    kwargs[field.name] = kwargs[batch_alias]
+            kwargs.pop(batch_alias)
 
         if "float_dtype" in kwargs:
             kwargs["float_dtype"] = getattr(torch, "float_dtype")

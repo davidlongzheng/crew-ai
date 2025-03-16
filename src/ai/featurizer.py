@@ -68,6 +68,10 @@ def featurize(
     hand = pad_seq(
         mapper(lambda x: pad_cards(x["hand"]), private_inputs), dtype=torch.int8
     )
+    hands = pad_seq(
+        mapper(lambda x: list(map(pad_cards, x["hands"])), private_inputs),
+        dtype=torch.int8,
+    )
     player_idx = pad_seq(
         mapper(lambda x: x["player_idx"], private_inputs), dtype=torch.int8
     )
@@ -87,6 +91,7 @@ def featurize(
         ),
         private=TensorDict(
             hand=hand,
+            hands=hands,
             player_idx=player_idx,
             trick=trick,
             turn=turn,

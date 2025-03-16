@@ -70,7 +70,7 @@ class Engine:
             [] for _ in range(self.settings.num_players)
         ]
         for i, task in enumerate(self.settings.tasks):
-            assigned_player = i % self.settings.num_players
+            assigned_player = (leader + i) % self.settings.num_players
             assigned_tasks[assigned_player].append(
                 AssignedTask(task.formula, assigned_player, self.settings)
             )

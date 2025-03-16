@@ -10,12 +10,13 @@ class PaddedEmbed(nn.Module):
     def __init__(
         self,
         num_embeddings: int,
-        embed_dim: int,
+        output_dim: int,
         dropout: float,
     ):
         super().__init__()
-        self.embed = nn.Embedding(num_embeddings + 1, embed_dim, padding_idx=0)
+        self.embed = nn.Embedding(num_embeddings + 1, output_dim, padding_idx=0)
         self.dropout = None
+        self.output_dim = output_dim
         if dropout:
             self.dropout = nn.Dropout(dropout)
 
@@ -32,12 +33,13 @@ class CardModel(nn.Module):
         self,
         num_ranks: int,
         num_suits: int,
-        embed_dim: int,
+        output_dim: int,
         dropout: float,
     ):
         super().__init__()
-        self.rank_embed = PaddedEmbed(num_ranks, embed_dim, dropout)
-        self.suit_embed = PaddedEmbed(num_suits, embed_dim, dropout)
+        self.rank_embed = PaddedEmbed(num_ranks, output_dim, dropout)
+        self.suit_embed = PaddedEmbed(num_suits, output_dim, dropout)
+        self.output_dim = output_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] == 2
@@ -48,7 +50,7 @@ class CardModel(nn.Module):
 class HandModel(nn.Module):
     def __init__(
         self,
-        embed_dim: int,
+        output_dim: int,
         card_model: CardModel,
         hidden_dim: int,
         num_hidden_layers: int,
@@ -57,21 +59,94 @@ class HandModel(nn.Module):
     ):
         super().__init__()
         self.card_model = card_model
+        self.output_dim = output_dim
+        input_dim = self.card_model.output_dim
+        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
         self.mlp = make_mlp(
-            embed_dim,
+            input_dim,
             hidden_dim,
-            embed_dim,
+            output_dim,
             num_hidden_layers,
             dropout=dropout,
-            use_layer_norm=use_layer_norm,
+        )
+
+    def forward(self, x, check_neg_inf=True):
+        mask = (x[..., 0] == -1).unsqueeze(-1)
+        x = self.card_model(x)
+        if self.layer_norm:
+            x = self.layer_norm(x)
+        x = self.mlp(x)
+        x = x.masked_fill(
+            mask,
+            -float("inf"),
+        )
+        x = torch.max(x, dim=-2)[0]
+        if check_neg_inf:
+            assert not torch.isneginf(x).any()
+        return x
+
+
+class HandsModel(nn.Module):
+    def __init__(
+        self,
+        output_dim: int,
+        hand_model: HandModel,
+        player_model: PaddedEmbed,
+        hidden_dim: int,
+        num_hidden_layers: int,
+        use_layer_norm: bool,
+        dropout: float,
+        concat_inputs: bool,
+    ):
+        super().__init__()
+        self.hand_model = hand_model
+        self.player_model = player_model
+        self.input_dim = (
+            hand_model.output_dim + player_model.output_dim
+            if concat_inputs
+            else max(hand_model.output_dim, player_model.output_dim)
+        )
+        self.layer_norm = nn.LayerNorm(self.input_dim) if use_layer_norm else None
+        self.output_dim = output_dim
+        self.concat_inputs = concat_inputs
+        self.mlp = make_mlp(
+            self.input_dim,
+            hidden_dim,
+            output_dim,
+            num_hidden_layers,
+            dropout=dropout,
         )
 
     def forward(self, x):
-        mask = x[..., 0] == -1
-        x = self.card_model(x)
+        # inp = (N,T,P,H,2) out = (N,T,P,F)
+        x = self.hand_model(x, check_neg_inf=False)
+        # For any players with no cards left, it's possible
+        # for this to be negative infinity.
+        mask = torch.isneginf(x[..., 0]).unsqueeze(-1)
+        x = x.masked_fill(
+            mask,
+            0.0,
+        )
+
+        # (P,)
+        player_idx = torch.arange(x.shape[-2], dtype=torch.int8)
+        # (P, F)
+        player_embed = self.player_model(player_idx)
+        if self.concat_inputs:
+            x = torch.cat([x, player_embed], dim=-1)
+        else:
+            x = nn.functional.pad(x, (0, self.input_dim - x.shape[-1]))
+            player_embed = nn.functional.pad(
+                player_embed, (0, self.input_dim - player_embed.shape[-1])
+            )
+            x = x + player_embed
+
+        if self.layer_norm:
+            x = self.layer_norm(x)
+
         x = self.mlp(x)
         x = x.masked_fill(
-            mask.unsqueeze(-1),
+            mask,
             -float("inf"),
         )
         x = torch.max(x, dim=-2)[0]
@@ -82,24 +157,26 @@ class HandModel(nn.Module):
 def get_embed_models(
     hp: Hyperparams,
     settings: Settings,
+    network_type: str,
 ) -> dict[str, nn.Module]:
+    player_model = PaddedEmbed(
+        settings.num_players,
+        hp.embed_dim,
+        hp.embed_dropout,
+    )
     card_model = CardModel(
         settings.num_ranks, settings.num_suits, hp.embed_dim, hp.embed_dropout
     )
     hand_model = HandModel(
-        hp.embed_dim,
+        hp.hand_embed_dim,
         card_model,
         hidden_dim=hp.hand_hidden_dim,
         num_hidden_layers=hp.hand_num_hidden_layers,
         use_layer_norm=hp.hand_use_layer_norm,
         dropout=hp.hand_dropout,
     )
-    return {
-        "player": PaddedEmbed(
-            settings.num_players,
-            hp.embed_dim,
-            hp.embed_dropout,
-        ),
+    ret = {
+        "player": player_model,
         "trick": PaddedEmbed(
             settings.num_tricks,
             hp.embed_dim,
@@ -111,5 +188,20 @@ def get_embed_models(
             hp.embed_dropout,
         ),
         "card": card_model,
-        "hand": hand_model,
     }
+
+    if network_type == "value":
+        ret["hands"] = HandsModel(
+            hp.hands_embed_dim,
+            hand_model,
+            player_model,
+            hidden_dim=hp.hands_hidden_dim,
+            num_hidden_layers=hp.hands_num_hidden_layers,
+            use_layer_norm=hp.hands_use_layer_norm,
+            dropout=hp.hands_dropout,
+            concat_inputs=hp.hands_concat_inputs,
+        )
+    else:
+        ret["hand"] = hand_model
+
+    return ret
