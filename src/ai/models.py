@@ -121,6 +121,7 @@ class BackboneModel(nn.Module):
         dropout: float,
         use_layer_norm: bool,
         concat_inputs: bool,
+        knockout_idx: int | None,
     ):
         super().__init__()
         self.network_type = network_type
@@ -133,9 +134,20 @@ class BackboneModel(nn.Module):
         self.output_dim = output_dim
         input_dim = (
             self.hist_model.output_dim
-            + self.hand_embed.output_dim
             + (embed_dim * 3 if concat_inputs else embed_dim)
+            + self.hand_embed.output_dim
         )
+        # nocommit stupid
+        self.knockout_idx: int | None = knockout_idx
+        if knockout_idx is not None:
+            if knockout_idx == 0:
+                input_dim -= self.hist_model.output_dim
+            elif knockout_idx == 1:
+                input_dim -= embed_dim * 3 if concat_inputs else embed_dim
+            elif knockout_idx == 2:
+                input_dim -= self.hand_embed.output_dim
+            else:
+                raise ValueError(knockout_idx)
         self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
         self.mlp = make_mlp(
             input_dim,
@@ -172,7 +184,11 @@ class BackboneModel(nn.Module):
         else:
             private_embed = player_embed + trick_embed + turn_embed
 
-        x = torch.cat([hist_embed, private_embed, hand_embed], dim=-1)
+        inps = [hist_embed, private_embed, hand_embed]
+        if self.knockout_idx is not None:
+            inps = inps[: self.knockout_idx] + inps[self.knockout_idx + 1 :]
+
+        x = torch.cat(inps, dim=-1)
         if self.layer_norm:
             x = self.layer_norm(x)
 
@@ -306,6 +322,7 @@ def get_models(
             hp.backbone_dropout,
             hp.backbone_use_layer_norm,
             hp.backbone_concat_inputs,
+            hp.backbone_knockout_idx,
         )
         if network_type == "policy":
             policy_head = PolicyHead(

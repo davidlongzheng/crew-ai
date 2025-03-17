@@ -5,6 +5,36 @@ from ..game.settings import Settings
 from .hyperparams import Hyperparams
 from .utils import make_mlp
 
+AGG_METHODS = ["maxpool", "sumpool", "avgpool"]
+
+
+def aggregate(x, mask, *, method, dim, check_finite=True):
+    assert method in AGG_METHODS, method
+
+    x = x.masked_fill(
+        mask,
+        -float("inf") if method == "maxpool" else float("nan"),
+    )
+
+    if method == "maxpool":
+        out = torch.max(x, dim=dim)[0]
+    elif method == "sumpool":
+        out = torch.nansum(x, dim=dim)
+    elif method == "avgpool":
+        num_notna = (~x.isnan()).sum(dim=dim)
+        out = torch.where(
+            num_notna > 0,
+            torch.nansum(x, dim=dim) / num_notna.clamp(min=1),
+            float("nan"),
+        )
+    else:
+        raise ValueError(method)
+
+    if check_finite:
+        assert out.isfinite().all()
+
+    return out
+
 
 class PaddedEmbed(nn.Module):
     def __init__(
@@ -56,6 +86,7 @@ class HandModel(nn.Module):
         num_hidden_layers: int,
         use_layer_norm: bool,
         dropout: float,
+        agg_method: str,
     ):
         super().__init__()
         self.card_model = card_model
@@ -69,20 +100,18 @@ class HandModel(nn.Module):
             num_hidden_layers,
             dropout=dropout,
         )
+        assert agg_method in AGG_METHODS, agg_method
+        self.agg_method = agg_method
 
-    def forward(self, x, check_neg_inf=True):
+    def forward(self, x, check_finite=True):
         mask = (x[..., 0] == -1).unsqueeze(-1)
         x = self.card_model(x)
         if self.layer_norm:
             x = self.layer_norm(x)
         x = self.mlp(x)
-        x = x.masked_fill(
-            mask,
-            -float("inf"),
+        x = aggregate(
+            x, mask, method=self.agg_method, dim=-2, check_finite=check_finite
         )
-        x = torch.max(x, dim=-2)[0]
-        if check_neg_inf:
-            assert not torch.isneginf(x).any()
         return x
 
 
@@ -97,6 +126,7 @@ class HandsModel(nn.Module):
         use_layer_norm: bool,
         dropout: float,
         concat_inputs: bool,
+        agg_method: str,
     ):
         super().__init__()
         self.hand_model = hand_model
@@ -116,13 +146,15 @@ class HandsModel(nn.Module):
             num_hidden_layers,
             dropout=dropout,
         )
+        assert agg_method in AGG_METHODS, agg_method
+        self.agg_method = agg_method
 
     def forward(self, x):
         # inp = (N,T,P,H,2) out = (N,T,P,F)
-        x = self.hand_model(x, check_neg_inf=False)
+        x = self.hand_model(x, check_finite=False)
         # For any players with no cards left, it's possible
-        # for this to be negative infinity.
-        mask = torch.isneginf(x[..., 0]).unsqueeze(-1)
+        # for this to be non-finite
+        mask = (~x[..., 0].isfinite()).unsqueeze(-1)
         x = x.masked_fill(
             mask,
             0.0,
@@ -133,7 +165,9 @@ class HandsModel(nn.Module):
         # (P, F)
         player_embed = self.player_model(player_idx)
         if self.concat_inputs:
-            x = torch.cat([x, player_embed], dim=-1)
+            x = torch.cat(
+                [x, player_embed.expand(*x.shape[:2], *player_embed.shape)], dim=-1
+            )
         else:
             x = nn.functional.pad(x, (0, self.input_dim - x.shape[-1]))
             player_embed = nn.functional.pad(
@@ -145,12 +179,7 @@ class HandsModel(nn.Module):
             x = self.layer_norm(x)
 
         x = self.mlp(x)
-        x = x.masked_fill(
-            mask,
-            -float("inf"),
-        )
-        x = torch.max(x, dim=-2)[0]
-        assert not torch.isneginf(x).any()
+        x = aggregate(x, mask, method=self.agg_method, dim=-2)
         return x
 
 
@@ -174,6 +203,7 @@ def get_embed_models(
         num_hidden_layers=hp.hand_num_hidden_layers,
         use_layer_norm=hp.hand_use_layer_norm,
         dropout=hp.hand_dropout,
+        agg_method=hp.hand_agg_method,
     )
     ret = {
         "player": player_model,
@@ -200,6 +230,7 @@ def get_embed_models(
             use_layer_norm=hp.hands_use_layer_norm,
             dropout=hp.hands_dropout,
             concat_inputs=hp.hands_concat_inputs,
+            agg_method=hp.hands_agg_method,
         )
     else:
         ret["hand"] = hand_model

@@ -26,6 +26,10 @@ from .rollout import do_batch_rollout
 from .summary_writer import CustomSummaryWriter
 
 
+def num_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
 def get_device():
     return torch.device(
         "mps"
@@ -34,6 +38,10 @@ def get_device():
         if torch.cuda.is_available()
         else "cpu"
     )
+
+
+def should_keep_outdir(x):
+    return (x / "running").exists() or (x / "keep").exists()
 
 
 def create_optim(models, lr: float, weight_decay: float):
@@ -78,6 +86,27 @@ def gae_advantage_discount(num_moves, gae_gamma, gae_lambda, device, dtype):
 @functools.lru_cache
 def gae_gamma_discount(num_moves, gae_gamma, device):
     return gae_gamma ** torch.arange(num_moves - 1, -1, -1).to(device)
+
+
+class Timer:
+    def __init__(self, writer: SummaryWriter, log_first=False):
+        self.writer = writer
+        self.times: dict[str, float | None] = {}
+        self.log_first = log_first
+        self.has_logged: set[str] = set()
+
+    def start(self, key):
+        assert self.times.get(key) is None
+        self.times[key] = time.time()
+
+    def finish(self, key, global_step):
+        assert self.times.get(key) is not None
+        elapsed = time.time() - self.times[key]
+        self.writer.add_scalar(f"times/{key}_time", elapsed, global_step)
+        if self.log_first and key not in self.has_logged:
+            logger.info(f"{key}_time: {elapsed:.3f}s")
+            self.has_logged.add(key)
+        self.times[key] = None
 
 
 def compute_advantage(
@@ -170,40 +199,90 @@ def compute_policy_loss(
 
 def compute_value_loss(
     td,
+    method,
+    smooth_l1_beta,
 ):
+    def get_loss(x, y):
+        if method == "mse":
+            return torch.mean((x - y) ** 2)
+        elif method == "smoothl1":
+            return torch.mean(
+                torch.where(
+                    torch.abs(x - y) < smooth_l1_beta,
+                    0.5 * (x - y) ** 2 / smooth_l1_beta,
+                    torch.abs(x - y) - 0.5 * smooth_l1_beta,
+                )
+            )
+        else:
+            raise ValueError(method)
+
     values = td["values"]
     # only handle this case if it comes to that.
     assert (td["inps"]["seq_lengths"] == values.shape[1]).all()
     value_targets = td["value_targets"]
-    loss = torch.mean((values - value_targets) ** 2)
-    ret = {"loss": loss}
-
-    loss_pt = torch.mean((values - value_targets) ** 2, dim=0)
-    ret["loss_t0"] = loss_pt[0]
-    ret["loss_t-1"] = loss_pt[-1]
-
-    return ret
+    return {
+        "loss": get_loss(values, value_targets),
+        "loss_t0": get_loss(values[:, 0], value_targets[:, 0]),
+        "loss_t-1": get_loss(values[:, -1], value_targets[:, -1]),
+    }
 
 
-class Timer:
-    def __init__(self, writer: SummaryWriter, log_first=False):
-        self.writer = writer
-        self.times: dict[str, float | None] = {}
-        self.log_first = log_first
-        self.has_logged: set[str] = set()
+def get_train_data(
+    hp: Hyperparams,
+    settings: Settings,
+    device: torch.device,
+    policy_model: PolicyModel,
+    timer: Timer,
+    round: int,
+):
+    def pad_seq(inp, *, dtype=None):
+        return pad_sequence(
+            [torch.tensor(x, dtype=dtype, device=device) for x in inp],
+            batch_first=True,
+        )
 
-    def start(self, key):
-        assert self.times.get(key) is None
-        self.times[key] = time.time()
+    timer.start("rollout")
+    seed = int(torch.randint(0, 100000, ()))
+    rollouts = do_batch_rollout(
+        settings,
+        num_rollouts=hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
+        seed=seed,
+        policy_model=policy_model,
+        device=device,
+    )
+    timer.finish("rollout", round)
 
-    def finish(self, key, global_step):
-        assert self.times.get(key) is not None
-        elapsed = time.time() - self.times[key]
-        self.writer.add_scalar(f"times/{key}_time", elapsed, global_step)
-        if self.log_first and key not in self.has_logged:
-            logger.info(f"{key}_time: {elapsed:.3f}s")
-            self.has_logged.add(key)
-        self.times[key] = None
+    timer.start("featurize")
+    inps = featurize(
+        public_history=[x["public_history"] for x in rollouts],
+        private_inputs=[x["private_inputs"] for x in rollouts],
+        valid_actions=[x["valid_actions"] for x in rollouts],
+        non_feature_dims=2,
+        settings=settings,
+        device=device,
+    )
+    actions = pad_seq([x["actions"] for x in rollouts])
+    orig_log_probs = pad_seq([x["log_probs"] for x in rollouts])
+    rewards = torch.tensor([x["reward"] for x in rollouts], device=device)
+    frac_success = torch.tensor(
+        [
+            np.sum([y[0] for y in x["num_success_tasks_pp"]])
+            / np.sum([y[1] for y in x["num_success_tasks_pp"]])
+            for x in rollouts
+        ],
+        device=device,
+    )
+    td = TensorDict(
+        inps=inps,
+        actions=actions,
+        orig_log_probs=orig_log_probs,
+        rewards=rewards,
+        frac_success=frac_success,
+    )
+    td.auto_batch_size_()
+    timer.finish("featurize", round)
+
+    return td
 
 
 def train_one_epoch(
@@ -233,6 +312,8 @@ def train_one_epoch(
         else:
             losses = compute_value_loss(
                 td_batch,
+                hp.value_loss_method,
+                hp.value_smooth_l1_beta,
             )
 
         if mode == "train":
@@ -264,6 +345,7 @@ def train_one_round(
     gc,
     writer,
     log_epoch,
+    outdir,
 ):
     train_data_loader = DataLoader(
         td[: hp.num_train_rollouts_per_round],
@@ -332,63 +414,7 @@ def train_one_round(
                         gc[f"{network_type}_num_epochs"],
                     )
 
-
-def get_train_data(
-    hp: Hyperparams,
-    settings: Settings,
-    device: torch.device,
-    policy_model: PolicyModel,
-    timer: Timer,
-    round: int,
-):
-    def pad_seq(inp, *, dtype=None):
-        return pad_sequence(
-            [torch.tensor(x, dtype=dtype, device=device) for x in inp],
-            batch_first=True,
-        )
-
-    timer.start("rollout")
-    seed = int(torch.randint(0, 100000, ()))
-    rollouts = do_batch_rollout(
-        settings,
-        num_rollouts=hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
-        seed=seed,
-        policy_model=policy_model,
-        device=device,
-    )
-    timer.finish("rollout", round)
-
-    timer.start("featurize")
-    inps = featurize(
-        public_history=[x["public_history"] for x in rollouts],
-        private_inputs=[x["private_inputs"] for x in rollouts],
-        valid_actions=[x["valid_actions"] for x in rollouts],
-        non_feature_dims=2,
-        settings=settings,
-        device=device,
-    )
-    actions = pad_seq([x["actions"] for x in rollouts])
-    orig_log_probs = pad_seq([x["log_probs"] for x in rollouts])
-    rewards = torch.tensor([x["reward"] for x in rollouts], device=device)
-    frac_success = torch.tensor(
-        [
-            np.sum([y[0] for y in x["num_success_tasks_pp"]])
-            / np.sum([y[1] for y in x["num_success_tasks_pp"]])
-            for x in rollouts
-        ],
-        device=device,
-    )
-    td = TensorDict(
-        inps=inps,
-        actions=actions,
-        orig_log_probs=orig_log_probs,
-        rewards=rewards,
-        frac_success=frac_success,
-    )
-    td.auto_batch_size_()
-    timer.finish("featurize", round)
-
-    return td
+            (outdir / "keep").touch()
 
 
 def train(
@@ -448,6 +474,7 @@ def train(
             gc=gc,
             writer=writer,
             log_epoch=(hp.num_rounds <= 5),
+            outdir=outdir,
         )
         timer.finish("training", round)
 
@@ -463,8 +490,6 @@ def train(
             },
             global_step=round,
         )
-
-        (outdir / "keep").touch()
 
 
 @click.command()
@@ -531,7 +556,7 @@ def main(
             [
                 int(x.name.split("_")[-1])
                 for x in outdir.glob("run_*")
-                if (x / "keep").exists()
+                if should_keep_outdir(x)
             ],
             default=-1,
         )
@@ -540,47 +565,55 @@ def main(
         else:
             outdir = outdir / f"run_{max_run_idx + 1}"
 
-    if outdir.exists() and (clean or not (outdir / "keep").exists()):
-        logger.info(f"** Cleaning outdir {outdir} **")
-        shutil.rmtree(outdir)
-    if not resume and outdir.exists():
-        raise Exception("Must set --clean or --resume to run on existing outdir.")
+    if outdir.exists():
+        if clean or not should_keep_outdir(outdir):
+            logger.info(f"** Cleaning outdir {outdir} **")
+            shutil.rmtree(outdir)
+        elif not resume:
+            raise Exception("Must set --clean or --resume to run on existing outdir.")
     outdir.mkdir(parents=True, exist_ok=True)
     logger.add(outdir / "train.log")
+    (outdir / "running").touch()
 
-    if td0_path:
-        td0_path = td0_path.resolve()
+    try:
+        if td0_path:
+            td0_path = td0_path.resolve()
 
-    logger.info("** Training Configuration **")
-    logger.info(f"Settings: {settings}")
-    logger.info(f"Hyperparams: {hp}")
-    logger.info(f"Output Directory: {outdir}")
-    logger.info(f"Device: {device}")
-    logger.info(f"Training Seed: {seed}")
-    torch.set_default_dtype(hp.float_dtype)
-    torch.manual_seed(seed)
+        logger.info("** Training Configuration **")
+        logger.info(f"Settings: {settings}")
+        logger.info(f"Hyperparams: {hp}")
+        logger.info(f"Output Directory: {outdir}")
+        logger.info(f"Device: {device}")
+        logger.info(f"Training Seed: {seed}")
+        torch.set_default_dtype(hp.float_dtype)
+        torch.manual_seed(seed)
 
-    logger.info("** Creating models, optimizer **")
-    models = get_models(hp, settings)
-    for m in models.values():
-        m.to(device)
-    policy_model = cast(PolicyModel, models["policy"])
-    value_model = cast(ValueModel, models["value"])
-    optimizer = create_optim([policy_model, value_model], hp.lr, hp.weight_decay)
-
-    logger.info("** Training **")
-    with CustomSummaryWriter(str(outdir)) as writer:
-        train(
-            device,
-            policy_model,
-            value_model,
-            optimizer,
-            settings,
-            hp,
-            writer,
-            outdir,
-            td0_path,
+        logger.info("** Creating models, optimizer **")
+        models = get_models(hp, settings)
+        for m in models.values():
+            m.to(device)
+        policy_model = cast(PolicyModel, models["policy"])
+        value_model = cast(ValueModel, models["value"])
+        optimizer = create_optim([policy_model, value_model], hp.lr, hp.weight_decay)
+        logger.info(
+            f"Num Parameters: policy={num_params(policy_model):.2e} value={num_params(value_model):.2e}"
         )
+
+        logger.info("** Training **")
+        with CustomSummaryWriter(str(outdir)) as writer:
+            train(
+                device,
+                policy_model,
+                value_model,
+                optimizer,
+                settings,
+                hp,
+                writer,
+                outdir,
+                td0_path,
+            )
+    finally:
+        (outdir / "running").unlink()
 
 
 if __name__ == "__main__":

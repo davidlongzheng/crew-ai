@@ -36,6 +36,8 @@ class Hyperparams:
     ppo_clip_ratio: float = 0.2
     entropy_coef: float = 1e-4
     early_stop_kl: float = 0.05
+    value_loss_method: str = "mse"
+    value_smooth_l1_beta: float = 0.25
 
     # For embeddings
     embed_dim: int = 16
@@ -47,6 +49,7 @@ class Hyperparams:
     hand_num_hidden_layers: int = 1
     hand_use_layer_norm: bool = True
     hand_dropout: float = 0.1
+    hand_agg_method: str = "maxpool"
 
     # For embedding the global set of hands
     hands_hidden_dim: int = 64
@@ -55,6 +58,7 @@ class Hyperparams:
     hands_use_layer_norm: bool = True
     hands_dropout: float = 0.1
     hands_concat_inputs: bool = False
+    hands_agg_method: str = "maxpool"
 
     # For public history LSTM
     hist_hidden_dim: int = 32
@@ -71,6 +75,8 @@ class Hyperparams:
     backbone_dropout: float = 0.1
     backbone_use_layer_norm: bool = True
     backbone_concat_inputs: bool = False
+    # nocommit stupid
+    backbone_knockout_idx: int | None = None
 
     # For policy-value network
     policy_query_dim: int = 16  # Attention vector on policy output.
@@ -92,6 +98,7 @@ class HyperparamsType(click.ParamType):
             ("dropout", r"^.*dropout$"),
             ("use_layer_norm", r"^.*use_layer_norm$"),
             ("concat_inputs", r"^.*concat_inputs$"),
+            ("agg_method", r"^.*agg_method$"),
         ]:
             if batch_alias not in kwargs:
                 continue
