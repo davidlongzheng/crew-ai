@@ -3,7 +3,7 @@ from torch import nn
 
 from ..game.settings import Settings
 from .hyperparams import Hyperparams
-from .utils import make_mlp
+from .utils import MLP
 
 AGG_METHODS = ["maxpool", "sumpool", "avgpool"]
 
@@ -93,7 +93,7 @@ class HandModel(nn.Module):
         self.output_dim = output_dim
         input_dim = self.card_model.output_dim
         self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-        self.mlp = make_mlp(
+        self.mlp = MLP(
             input_dim,
             hidden_dim,
             output_dim,
@@ -139,7 +139,7 @@ class HandsModel(nn.Module):
         self.layer_norm = nn.LayerNorm(self.input_dim) if use_layer_norm else None
         self.output_dim = output_dim
         self.concat_inputs = concat_inputs
-        self.mlp = make_mlp(
+        self.mlp = MLP(
             self.input_dim,
             hidden_dim,
             output_dim,

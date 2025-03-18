@@ -41,7 +41,7 @@ def get_device():
 
 
 def should_keep_outdir(x):
-    return (x / "running").exists() or (x / "keep").exists()
+    return (x / "_running").exists() or (x / "_keep").exists()
 
 
 def create_optim(models, lr: float, weight_decay: float):
@@ -116,9 +116,9 @@ def compute_advantage(
     value_model: ValueModel,
 ):
     with torch.no_grad():
-        td["values"] = value_model(td["inps"])
+        td["orig_values"] = value_model(td["inps"])
 
-    values = td["values"]
+    values = td["orig_values"]
     T = values.shape[-1]
     # only handle this case if it comes to that.
     assert (td["inps"]["seq_lengths"] == T).all()
@@ -290,7 +290,7 @@ def train_one_epoch(
     network_type,
     data_loader,
     hp,
-    optimizer,
+    optim,
     model,
 ):
     running_losses = Counter()
@@ -298,7 +298,7 @@ def train_one_epoch(
     for td_batch in data_loader:
         out_key = "log_probs" if network_type == "policy" else "values"
         if mode == "train":
-            optimizer.zero_grad()
+            optim.zero_grad()
             td_batch[out_key] = model(td_batch["inps"])
         else:
             with torch.no_grad():
@@ -318,7 +318,7 @@ def train_one_epoch(
 
         if mode == "train":
             losses["loss"].backward()
-            optimizer.step()
+            optim.step()
 
         for k, v in losses.items():
             running_losses[k] += v.item()
@@ -341,7 +341,8 @@ def train_one_round(
     value_model,
     td,
     hp,
-    optimizer,
+    policy_optim,
+    value_optim,
     gc,
     writer,
     log_epoch,
@@ -364,6 +365,7 @@ def train_one_round(
     for network_type in ["value"]:  # nocommit
         logger.info(f"Training {network_type} network")
         model = policy_model if network_type == "policy" else value_model
+        optim = policy_optim if network_type == "policy" else value_optim
         for epoch in range(hp.num_epochs_per_round):
             if log_epoch:
                 logger.info(f"Epoch {epoch}")
@@ -382,7 +384,7 @@ def train_one_round(
                     network_type=network_type,
                     data_loader=data_loader,
                     hp=hp,
-                    optimizer=optimizer,
+                    optim=optim,
                     model=model,
                 )
                 if mode == "train":
@@ -414,47 +416,55 @@ def train_one_round(
                         gc[f"{network_type}_num_epochs"],
                     )
 
-            (outdir / "keep").touch()
+            (outdir / "_keep").touch()
 
 
 def train(
     device: torch.device,
     policy_model: PolicyModel,
     value_model: ValueModel,
-    optimizer: optim.Optimizer,
+    policy_optim: optim.Optimizer,
+    value_optim: optim.Optimizer,
     settings: Settings,
     hp: Hyperparams,
     writer: SummaryWriter,
     outdir: Path,
-    td0_path: Path | None,
+    start_round: int,
 ) -> None:
     timer = Timer(writer, log_first=True)
     gc: Counter = Counter()
-    for round in range(hp.num_rounds):
+
+    for round in range(start_round, hp.num_rounds):
         logger.info(f"Round {round}")
         policy_model.eval()
 
-        if round == 0 and td0_path and td0_path.exists():
-            logger.info(f"Loading round=0 td from {td0_path}")
-            td = torch.load(td0_path, weights_only=False)
-        else:
-            td = get_train_data(
-                hp=hp,
-                settings=settings,
-                device=device,
-                policy_model=policy_model,
-                timer=timer,
-                round=round,
-            )
-            if round == 0 and td0_path:
-                logger.info(f"Saving round=0 td to {td0_path}")
-                torch.save(td, td0_path)
+        td = get_train_data(
+            hp=hp,
+            settings=settings,
+            device=device,
+            policy_model=policy_model,
+            timer=timer,
+            round=round,
+        )
 
         mean_reward = td["rewards"].mean()
         writer.add_scalar("rewards/reward_mean", mean_reward, round)
         mean_frac_success = td["frac_success"].mean()
         assert mean_frac_success <= 1.0
         writer.add_scalar("rewards/frac_success_mean", mean_frac_success, round)
+
+        writer.add_hparams(
+            hparam_dict={
+                k: v
+                for k, v in asdict(hp).items()
+                if isinstance(v, (int, float, str, bool)) or v is None
+            },
+            metric_dict={
+                "metrics/reward_mean": mean_reward,
+                "metrics/frac_success": mean_frac_success,
+            },
+            global_step=round,
+        )
 
         timer.start("advantage")
         compute_advantage(td, hp.gae_gamma, hp.gae_lambda, value_model)
@@ -470,7 +480,8 @@ def train(
             value_model=value_model,
             td=td,
             hp=hp,
-            optimizer=optimizer,
+            policy_optim=policy_optim,
+            value_optim=value_optim,
             gc=gc,
             writer=writer,
             log_epoch=(hp.num_rounds <= 5),
@@ -478,17 +489,16 @@ def train(
         )
         timer.finish("training", round)
 
-        writer.add_hparams(
-            hparam_dict={
-                k: v
-                for k, v in asdict(hp).items()
-                if isinstance(v, (int, float, str, bool)) or v is None
+        torch.save(
+            {
+                "round": round + 1,
+                "td": td,
+                "policy_model": policy_model.state_dict(),
+                "value_model": value_model.state_dict(),
+                "policy_optim": policy_optim.state_dict(),
+                "value_optim": value_optim.state_dict(),
             },
-            metric_dict={
-                "metrics/reward_mean": mean_reward,
-                "metrics/frac_success": mean_frac_success,
-            },
-            global_step=round,
+            outdir / "checkpoint.pth",
         )
 
 
@@ -529,15 +539,14 @@ def train(
     help="Must set --resume to run on existing outdir.",
 )
 @click.option(
-    "--td0-path",
-    type=Path,
-    default=None,
-    help="Where to cache round=0 td for fast experimentation. kinda jank, consider deprecating in the future!",
-)
-@click.option(
     "--autoindex-runs",
     is_flag=True,
     help="Auto-index new runs.",
+)
+@click.option(
+    "--copy-dir",
+    type=Path,
+    help="Copy contents of a different outdir",
 )
 def main(
     outdir: Path,
@@ -548,7 +557,7 @@ def main(
     clean: bool,
     resume: bool,
     autoindex_runs: bool,
-    td0_path: Path | None,
+    copy_dir: Path | None,
 ) -> None:
     outdir = outdir.resolve()
     if autoindex_runs:
@@ -571,14 +580,22 @@ def main(
             shutil.rmtree(outdir)
         elif not resume:
             raise Exception("Must set --clean or --resume to run on existing outdir.")
+
+    if copy_dir and not outdir.exists():
+        logger.info(f"Copying contents from {copy_dir} to {outdir}")
+        shutil.copytree(copy_dir, outdir)
+
     outdir.mkdir(parents=True, exist_ok=True)
     logger.add(outdir / "train.log")
-    (outdir / "running").touch()
+    (outdir / "_running").touch()
+
+    if (outdir / "checkpoint.pth").exists():
+        logger.info("Loading state from checkpoint")
+        orig_state_dict = torch.load(outdir / "checkpoint.pth", weights_only=False)
+    else:
+        orig_state_dict = {}
 
     try:
-        if td0_path:
-            td0_path = td0_path.resolve()
-
         logger.info("** Training Configuration **")
         logger.info(f"Settings: {settings}")
         logger.info(f"Hyperparams: {hp}")
@@ -594,9 +611,30 @@ def main(
             m.to(device)
         policy_model = cast(PolicyModel, models["policy"])
         value_model = cast(ValueModel, models["value"])
-        optimizer = create_optim([policy_model, value_model], hp.lr, hp.weight_decay)
+        policy_optim = create_optim([policy_model], hp.lr, hp.weight_decay)
+        value_optim = create_optim([value_model], hp.lr, hp.weight_decay)
+        for obj, key in [
+            (policy_model, "policy_model"),
+            (value_model, "value_model"),
+            (policy_optim, "policy_optim"),
+            (value_optim, "value_optim"),
+        ]:
+            if key in orig_state_dict:
+                obj.load_state_dict(orig_state_dict[key])
+                del orig_state_dict[key]
         logger.info(
             f"Num Parameters: policy={num_params(policy_model):.2e} value={num_params(value_model):.2e}"
+        )
+
+        torch.save(
+            {
+                "outdir": outdir,
+                "settings": settings,
+                "hp": hp,
+                "seed": seed,
+                "device": device,
+            },
+            outdir / "settings.pth",
         )
 
         logger.info("** Training **")
@@ -605,15 +643,16 @@ def main(
                 device,
                 policy_model,
                 value_model,
-                optimizer,
+                policy_optim,
+                value_optim,
                 settings,
                 hp,
                 writer,
                 outdir,
-                td0_path,
+                orig_state_dict.get("round", 0),
             )
     finally:
-        (outdir / "running").unlink()
+        (outdir / "_running").unlink()
 
 
 if __name__ == "__main__":

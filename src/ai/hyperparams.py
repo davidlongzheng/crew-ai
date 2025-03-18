@@ -20,7 +20,7 @@ class Hyperparams:
     num_train_rollouts_per_round: int = 8192
     num_val_rollouts_per_round: int = 1024
     # Number of trajectories in a batch.
-    batch_size: int = 32
+    batch_size: int = 64
     lr: float = 1e-3
     weight_decay: float = 1e-3
 
@@ -75,6 +75,7 @@ class Hyperparams:
     backbone_dropout: float = 0.1
     backbone_use_layer_norm: bool = True
     backbone_concat_inputs: bool = True
+    backbone_use_resid: bool = False
 
     # For policy-value network
     policy_query_dim: int = 16  # Attention vector on policy output.

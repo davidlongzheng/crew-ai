@@ -8,7 +8,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from ..game.settings import Settings
 from .embedding import HandModel, HandsModel, get_embed_models
 from .hyperparams import Hyperparams
-from .utils import make_mlp
+from .utils import MLP
 
 
 class HistoryModel(nn.Module):
@@ -121,6 +121,7 @@ class BackboneModel(nn.Module):
         dropout: float,
         use_layer_norm: bool,
         concat_inputs: bool,
+        use_resid: bool,
     ):
         super().__init__()
         self.network_type = network_type
@@ -137,12 +138,13 @@ class BackboneModel(nn.Module):
             + self.hand_embed.output_dim
         )
         self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-        self.mlp = make_mlp(
+        self.mlp = MLP(
             input_dim,
             hidden_dim,
             output_dim,
             num_hidden_layers,
             dropout=dropout,
+            use_resid=use_resid,
         )
 
     def start_single_step(self):
@@ -307,6 +309,7 @@ def get_models(
             hp.backbone_dropout,
             hp.backbone_use_layer_norm,
             hp.backbone_concat_inputs,
+            hp.backbone_use_resid,
         )
         if network_type == "policy":
             policy_head = PolicyHead(
