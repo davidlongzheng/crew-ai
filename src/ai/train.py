@@ -468,7 +468,7 @@ def train(
 
         timer.start("advantage")
         compute_advantage(td, hp.gae_gamma, hp.gae_lambda, value_model)
-        for k in ["value", "value_target", "unnorm_advantage"]:
+        for k in ["orig_value", "value_target", "unnorm_advantage"]:
             writer.add_scalar(f"rewards/{k}_mean", td[f"{k}s"].mean(), round)
             writer.add_scalar(f"rewards/{k}_std", td[f"{k}s"].std(), round)
         timer.finish("advantage", round)
