@@ -12,7 +12,7 @@ def make_mlp(
     *,
     dropout=0.0,
     use_layer_norm=False,
-    activation=torch.nn.ReLU,
+    activation=torch.nn.GELU,
 ) -> nn.Sequential:
     layer_idx = 0
     inps = OrderedDict()

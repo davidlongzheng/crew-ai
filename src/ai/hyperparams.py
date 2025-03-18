@@ -15,7 +15,7 @@ class Hyperparams:
     # Each round is a single iteration of PPO clip.
     num_rounds: int = 1
     # Each epoch goes through all the trajectories of a given round.
-    num_epochs_per_round: int = 20
+    num_epochs_per_round: int = 30
     # Number of trajectories in an epoch.
     num_train_rollouts_per_round: int = 8192
     num_val_rollouts_per_round: int = 1024
@@ -40,7 +40,7 @@ class Hyperparams:
     value_smooth_l1_beta: float = 0.25
 
     # For embeddings
-    embed_dim: int = 16
+    embed_dim: int = 32
     embed_dropout: float = 0.1
 
     # For embedding a hand from a set of card embeddings
@@ -57,7 +57,7 @@ class Hyperparams:
     hands_num_hidden_layers: int = 1
     hands_use_layer_norm: bool = True
     hands_dropout: float = 0.1
-    hands_concat_inputs: bool = False
+    hands_concat_inputs: bool = True
     hands_agg_method: str = "maxpool"
 
     # For public history LSTM
@@ -66,7 +66,7 @@ class Hyperparams:
     hist_num_layers: int = 1
     hist_use_layer_norm: bool = True
     hist_dropout: float = 0.1
-    hist_concat_inputs: bool = False
+    hist_concat_inputs: bool = True
 
     # For backbone MLP
     backbone_hidden_dim: int = 32
@@ -74,9 +74,7 @@ class Hyperparams:
     backbone_output_dim: int = 16
     backbone_dropout: float = 0.1
     backbone_use_layer_norm: bool = True
-    backbone_concat_inputs: bool = False
-    # nocommit stupid
-    backbone_knockout_idx: int | None = None
+    backbone_concat_inputs: bool = True
 
     # For policy-value network
     policy_query_dim: int = 16  # Attention vector on policy output.
@@ -104,7 +102,7 @@ class HyperparamsType(click.ParamType):
                 continue
 
             for field in fields:
-                if re.match(batch_regex, field.name):
+                if re.match(batch_regex, field.name) and field.name not in kwargs:
                     kwargs[field.name] = kwargs[batch_alias]
             kwargs.pop(batch_alias)
 
