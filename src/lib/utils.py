@@ -9,6 +9,9 @@ def coerce_string(value):
         The coerced value, or the original string if coercion is not possible.
     """
 
+    if value.lower() == "none":
+        return None
+
     if value.lower() == "true":
         return True
     elif value.lower() == "false":

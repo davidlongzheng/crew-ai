@@ -22,7 +22,11 @@ class Hyperparams:
     # Number of trajectories in a batch.
     batch_size: int = 64
     lr: float = 1e-3
-    weight_decay: float = 1e-3
+    weight_decay: float = (
+        1e-3  # trivial amount of weight decay. set to 1e0 to have an effect.
+    )
+    early_stop_num_epochs: int | None = 5
+    grad_norm_clip: float = 1.0
 
     # For advantage calculation
     # How much to discount future rewards
@@ -77,7 +81,11 @@ class Hyperparams:
     backbone_concat_inputs: bool = True
     backbone_use_resid: bool = False
 
-    # For policy-value network
+    # For policy network
+    policy_hidden_dim: int = 32
+    policy_num_hidden_layers: int = 1
+    policy_dropout: float = 0.1
+    policy_use_layer_norm: bool = True
     policy_query_dim: int = 16  # Attention vector on policy output.
 
 

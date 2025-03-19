@@ -12,6 +12,7 @@ import click
 import numpy as np
 import torch
 import torch.optim as optim
+from torch.nn.utils import clip_grad_norm_
 from loguru import logger
 from tensordict import TensorDict
 from torch.nn.utils.rnn import pad_sequence
@@ -144,22 +145,37 @@ def compute_policy_loss(
     ppo_clip_ratio,
     entropy_coef,
 ):
+    # (N, T)
     actions = td["actions"]
+    # (N, T, H)
     orig_log_probs = td["orig_log_probs"]
+    # (N, T, H)
     log_probs = td["log_probs"]
+    # (N, T)
     advantages = td["advantages"]
 
     # only handle this case if it comes to that.
     assert (td["inps"]["seq_lengths"] == advantages.shape[1]).all()
 
+    # (N, T)
     orig_action_log_probs = torch.gather(
         orig_log_probs, dim=-1, index=actions.unsqueeze(-1)
     ).squeeze(-1)
+    # (N, T)
     action_log_probs = torch.gather(
         log_probs,
         dim=-1,
         index=actions.unsqueeze(-1),
     ).squeeze(-1)
+    # (N, T)
+    mask = (td["inps", "valid_actions"][..., 0] != -1).sum(dim=-1) > 1
+    # (N*T)
+    mask = mask.reshape((-1,))
+
+    def masked_mean(x):
+        # (N*T)
+        x = x.reshape((-1,))
+        return torch.mean(x[mask])
 
     def g(advantages):
         return torch.where(
@@ -168,19 +184,18 @@ def compute_policy_loss(
             (1 - ppo_clip_ratio) * advantages,
         )
 
-    ppo_loss = torch.mean(
-        -torch.minimum(
-            torch.exp(action_log_probs - orig_action_log_probs) * advantages,
-            g(advantages),
-        )
-    )
+    raw = torch.exp(action_log_probs - orig_action_log_probs) * advantages
+    ceil = g(advantages)
+    ppo_loss = masked_mean(-torch.minimum(raw, ceil))
+    min_ppo_loss = masked_mean(-ceil)
+    frac_clipped = masked_mean((raw > ceil).float())
     eps = np.log(1e-8)
     clamped_log_probs = log_probs.clamp(min=eps)
     clamped_orig_log_probs = orig_log_probs.clamp(min=eps)
-    entropy_loss = entropy_coef * torch.mean(
+    entropy_loss = entropy_coef * masked_mean(
         torch.sum(torch.exp(clamped_log_probs) * clamped_log_probs, dim=-1)
     )
-    kl_loss = torch.mean(
+    kl_loss = masked_mean(
         torch.sum(
             torch.exp(clamped_orig_log_probs)
             * (clamped_orig_log_probs - clamped_log_probs),
@@ -194,6 +209,8 @@ def compute_policy_loss(
         "ppo_loss": ppo_loss,
         "entropy_loss": entropy_loss,
         "kl_loss": kl_loss,
+        "min_ppo_loss": min_ppo_loss,
+        "frac_clipped": frac_clipped,
     }
 
 
@@ -318,6 +335,11 @@ def train_one_epoch(
 
         if mode == "train":
             losses["loss"].backward()
+            if hp.grad_norm_clip:
+                clip_grad_norm_(model.parameters(), hp.grad_norm_clip)
+            import ipdb
+
+            ipdb.set_trace()
             optim.step()
 
         for k, v in losses.items():
@@ -362,10 +384,11 @@ def train_one_round(
         drop_last=False,
         collate_fn=lambda x: x,
     )
-    for network_type in ["value"]:  # nocommit
+    for network_type in ["policy"]:
         logger.info(f"Training {network_type} network")
         model = policy_model if network_type == "policy" else value_model
         optim = policy_optim if network_type == "policy" else value_optim
+        best_loss_epoch, best_loss = None, float("inf")
         for epoch in range(hp.num_epochs_per_round):
             if log_epoch:
                 logger.info(f"Epoch {epoch}")
@@ -415,6 +438,16 @@ def train_one_round(
                         gc[f"{network_type}_num_steps"],
                         gc[f"{network_type}_num_epochs"],
                     )
+
+                if mode == "val" and losses["loss"] < best_loss:
+                    best_loss_epoch, best_loss = epoch, losses["loss"]
+
+            if (
+                hp.early_stop_num_epochs
+                and epoch - best_loss_epoch >= hp.early_stop_num_epochs
+            ):
+                logger.debug(f"Early stopping {network_type} at {epoch}")
+                break
 
             (outdir / "_keep").touch()
 

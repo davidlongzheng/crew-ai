@@ -6,7 +6,7 @@ from torch import Tensor, nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from ..game.settings import Settings
-from .embedding import HandModel, HandsModel, get_embed_models
+from .embedding import CardModel, HandModel, HandsModel, get_embed_models
 from .hyperparams import Hyperparams
 from .utils import MLP
 
@@ -187,14 +187,26 @@ class PolicyHead(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        card_embed: nn.Module,
-        embed_dim: int,
+        card_embed: CardModel,
+        hidden_dim: int,
+        num_hidden_layers: int,
+        dropout: float,
+        use_layer_norm: bool,
         query_dim: int,
     ):
         super().__init__()
         self.card_embed = card_embed
         self.query_model = nn.Linear(input_dim, query_dim)
-        self.key_model = nn.Linear(embed_dim, query_dim)
+        self.key_layer_norm = (
+            nn.LayerNorm(card_embed.output_dim) if use_layer_norm else None
+        )
+        self.key_model = MLP(
+            card_embed.output_dim,
+            hidden_dim,
+            query_dim,
+            num_hidden_layers=num_hidden_layers,
+            dropout=dropout,
+        )
         self.query_dim = query_dim
         self.log_softmax = nn.LogSoftmax(dim=-1)
 
@@ -204,6 +216,8 @@ class PolicyHead(nn.Module):
         valid_actions: Tensor,
     ) -> Tensor:
         valid_actions_embed = self.card_embed(valid_actions)
+        if self.key_layer_norm:
+            valid_actions_embed = self.key_layer_norm(valid_actions_embed)
 
         query = self.query_model(backbone_embed)
         key = self.key_model(valid_actions_embed)
@@ -313,10 +327,13 @@ def get_models(
         )
         if network_type == "policy":
             policy_head = PolicyHead(
-                input_dim=hp.backbone_output_dim,
-                card_embed=embed_models["card"],
-                embed_dim=hp.embed_dim,
-                query_dim=hp.policy_query_dim,
+                hp.backbone_output_dim,
+                cast(CardModel, embed_models["card"]),
+                hp.policy_hidden_dim,
+                hp.policy_num_hidden_layers,
+                hp.policy_dropout,
+                hp.policy_use_layer_norm,
+                hp.policy_query_dim,
             )
             ret["policy"] = PolicyModel(
                 backbone_model,
