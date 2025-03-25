@@ -3,13 +3,14 @@ from tensordict import TensorDict
 from torch.nn.utils.rnn import pad_sequence
 
 from ..game.settings import Settings
-from ..lib.types import StrMap
+from ..lib.types import StrMap, TaskIdxs
 
 
 def featurize(
     public_history: StrMap | list[StrMap] | list[list[StrMap]],
     private_inputs: StrMap | list[StrMap] | list[list[StrMap]],
     valid_actions: tuple | list[tuple] | list[list[tuple]],
+    task_idxs: TaskIdxs | list[TaskIdxs] | list[list[TaskIdxs]],
     settings: Settings,
     *,
     non_feature_dims: int,
@@ -60,10 +61,14 @@ def featurize(
     hist_turns = pad_seq(
         mapper(lambda x: x.get("turn", -1), public_history), dtype=torch.int8
     )
+    hist_phases = pad_seq(
+        mapper(lambda x: x.get("phase", -1), public_history), dtype=torch.int8
+    )
 
     def pad_cards(x: list[tuple]):
-        assert len(x) <= settings.max_hand_size
-        return x + [(-1, -1)] * (settings.max_hand_size - len(x))
+        # +1 to handle nosignal action in signal phase.
+        assert len(x) <= settings.max_hand_size + 1
+        return x + [(-1, -1)] * (settings.max_hand_size + 1 - len(x))
 
     hand = pad_seq(
         mapper(lambda x: pad_cards(x["hand"]), private_inputs), dtype=torch.int8
@@ -77,10 +82,16 @@ def featurize(
     )
     trick = pad_seq(mapper(lambda x: x["trick"], private_inputs), dtype=torch.int8)
     turn = pad_seq(mapper(lambda x: x["turn"], private_inputs), dtype=torch.int8)
+    phase = pad_seq(mapper(lambda x: x["phase"], private_inputs), dtype=torch.int8)
 
     valid_actions_arr: torch.Tensor = pad_seq(
         mapper(lambda x: pad_cards(x), valid_actions), dtype=torch.int8
     )
+
+    def pad_tasks(x):
+        return x + [(-1, -1)] * (settings.get_max_num_tasks() - len(x))
+
+    task_idxs_arr = pad_seq(mapper(pad_tasks, task_idxs), dtype=torch.int8)
 
     return TensorDict(
         hist=TensorDict(
@@ -88,6 +99,7 @@ def featurize(
             tricks=hist_tricks,
             cards=hist_cards,
             turns=hist_turns,
+            phases=hist_phases,
         ),
         private=TensorDict(
             hand=hand,
@@ -95,7 +107,9 @@ def featurize(
             player_idx=player_idx,
             trick=trick,
             turn=turn,
+            phase=phase,
         ),
         valid_actions=valid_actions_arr,
+        task_idxs=task_idxs_arr,
         seq_lengths=seq_lengths,
     )

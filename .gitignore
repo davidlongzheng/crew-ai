@@ -3,3 +3,4 @@ data/
 outdirs/
 __pycache__/
 wandb/
+win_cache/

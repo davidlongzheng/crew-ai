@@ -1,11 +1,18 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from ..game.settings import Settings
+from ..game.tasks import EASY_TASK_DEFS
 from .hyperparams import Hyperparams
 from .utils import MLP
 
 AGG_METHODS = ["maxpool", "sumpool", "avgpool"]
+
+
+def thermometer_encode(x, num_classes):
+    levels = torch.arange(num_classes, device=x.device)
+    return (x.unsqueeze(-1) >= levels).to(torch.float32)
 
 
 def aggregate(x, mask, *, method, dim, check_finite=True):
@@ -42,16 +49,41 @@ class PaddedEmbed(nn.Module):
         num_embeddings: int,
         output_dim: int,
         dropout: float,
+        embed_type: str,
     ):
         super().__init__()
-        self.embed = nn.Embedding(num_embeddings + 1, output_dim, padding_idx=0)
-        self.dropout = None
+        self.embed_type = embed_type
+        self.num_embeddings = num_embeddings
+        if self.embed_type == "embed":
+            self.embed: nn.Module = nn.Embedding(
+                num_embeddings + 1, output_dim, padding_idx=0
+            )
+        elif self.embed_type in ["one_hot", "thermo"]:
+            self.embed = nn.Linear(num_embeddings + 1, output_dim)
+        else:
+            raise ValueError(self.embed_type)
+
         self.output_dim = output_dim
+        self.dropout = None
         if dropout:
             self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = self.embed((x + 1).to(torch.int32))
+        if self.embed_type == "embed":
+            x = self.embed((x + 1).to(torch.int32))
+        elif self.embed_type == "one_hot":
+            x = self.embed(
+                F.one_hot((x + 1).long(), num_classes=self.num_embeddings + 1).float()
+            )
+        elif self.embed_type == "thermo":
+            x = self.embed(
+                thermometer_encode(
+                    (x + 1).long(), num_classes=self.num_embeddings + 1
+                ).float()
+            )
+        else:
+            raise ValueError(self.embed_type)
+
         if self.dropout:
             x = self.dropout(x)
 
@@ -61,14 +93,24 @@ class PaddedEmbed(nn.Module):
 class CardModel(nn.Module):
     def __init__(
         self,
-        num_ranks: int,
+        max_suit_length: int,
         num_suits: int,
         output_dim: int,
         dropout: float,
+        use_thermo: bool,
     ):
         super().__init__()
-        self.rank_embed = PaddedEmbed(num_ranks, output_dim, dropout)
-        self.suit_embed = PaddedEmbed(num_suits, output_dim, dropout)
+        self.max_suit_length = max_suit_length
+        self.num_suits = num_suits
+        self.rank_embed = PaddedEmbed(
+            max_suit_length,
+            output_dim,
+            dropout,
+            embed_type="thermo" if use_thermo else "embed",
+        )
+        self.suit_embed = PaddedEmbed(
+            num_suits, output_dim, dropout, embed_type="embed"
+        )
         self.output_dim = output_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -115,6 +157,55 @@ class HandModel(nn.Module):
         return x
 
 
+class TasksModel(nn.Module):
+    def __init__(
+        self,
+        output_dim: int,
+        task_model: PaddedEmbed,
+        player_model: PaddedEmbed,
+        hidden_dim: int,
+        num_hidden_layers: int,
+        use_layer_norm: bool,
+        dropout: float,
+        agg_method: str,
+    ):
+        super().__init__()
+        self.task_model = task_model
+        self.player_model = player_model
+        self.output_dim = output_dim
+        input_dim = self.task_model.output_dim + self.player_model.output_dim
+        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
+        self.mlp = MLP(
+            input_dim,
+            hidden_dim,
+            output_dim,
+            num_hidden_layers,
+            dropout=dropout,
+        )
+        assert agg_method in AGG_METHODS, agg_method
+        self.agg_method = agg_method
+
+    def forward(self, x, check_finite=True):
+        """Input: (..., K, 2)"""
+        # (..., K, 1)
+        mask = (x[..., 0] == -1).unsqueeze(-1)
+        # (..., K, F)
+        x = torch.cat(
+            [
+                self.task_model(x[..., 0]),
+                self.player_model(x[..., 1]),
+            ],
+            dim=-1,
+        )
+        if self.layer_norm:
+            x = self.layer_norm(x)
+        x = self.mlp(x)
+        x = aggregate(
+            x, mask, method=self.agg_method, dim=-2, check_finite=check_finite
+        )
+        return x
+
+
 class HandsModel(nn.Module):
     def __init__(
         self,
@@ -125,20 +216,14 @@ class HandsModel(nn.Module):
         num_hidden_layers: int,
         use_layer_norm: bool,
         dropout: float,
-        concat_inputs: bool,
         agg_method: str,
     ):
         super().__init__()
         self.hand_model = hand_model
         self.player_model = player_model
-        self.input_dim = (
-            hand_model.output_dim + player_model.output_dim
-            if concat_inputs
-            else max(hand_model.output_dim, player_model.output_dim)
-        )
+        self.input_dim = hand_model.output_dim + player_model.output_dim
         self.layer_norm = nn.LayerNorm(self.input_dim) if use_layer_norm else None
         self.output_dim = output_dim
-        self.concat_inputs = concat_inputs
         self.mlp = MLP(
             self.input_dim,
             hidden_dim,
@@ -164,16 +249,9 @@ class HandsModel(nn.Module):
         player_idx = torch.arange(x.shape[-2], dtype=torch.int8)
         # (P, F)
         player_embed = self.player_model(player_idx)
-        if self.concat_inputs:
-            x = torch.cat(
-                [x, player_embed.expand(*x.shape[:2], *player_embed.shape)], dim=-1
-            )
-        else:
-            x = nn.functional.pad(x, (0, self.input_dim - x.shape[-1]))
-            player_embed = nn.functional.pad(
-                player_embed, (0, self.input_dim - player_embed.shape[-1])
-            )
-            x = x + player_embed
+        x = torch.cat(
+            [x, player_embed.expand(*x.shape[:2], *player_embed.shape)], dim=-1
+        )
 
         if self.layer_norm:
             x = self.layer_norm(x)
@@ -192,9 +270,15 @@ def get_embed_models(
         settings.num_players,
         hp.embed_dim,
         hp.embed_dropout,
+        embed_type=("thermo" if hp.embed_use_thermo else "embed"),
     )
+    # +1 to handle nosignal case.
     card_model = CardModel(
-        settings.num_ranks, settings.num_suits, hp.embed_dim, hp.embed_dropout
+        settings.max_suit_length + 1,
+        settings.num_suits + 1,
+        hp.embed_dim,
+        hp.embed_dropout,
+        hp.embed_use_thermo,
     )
     hand_model = HandModel(
         hp.hand_embed_dim,
@@ -205,19 +289,41 @@ def get_embed_models(
         dropout=hp.hand_dropout,
         agg_method=hp.hand_agg_method,
     )
+    task_model = PaddedEmbed(
+        len(EASY_TASK_DEFS), hp.embed_dim, hp.embed_dropout, embed_type="embed"
+    )
+    tasks_model = TasksModel(
+        hp.tasks_embed_dim,
+        task_model,
+        player_model,
+        hp.tasks_hidden_dim,
+        hp.tasks_num_hidden_layers,
+        hp.tasks_use_layer_norm,
+        hp.tasks_dropout,
+        hp.tasks_agg_method,
+    )
     ret = {
         "player": player_model,
         "trick": PaddedEmbed(
             settings.num_tricks,
             hp.embed_dim,
             hp.embed_dropout,
+            embed_type=("thermo" if hp.embed_use_thermo else "embed"),
         ),
         "turn": PaddedEmbed(
             settings.num_players,
             hp.embed_dim,
             hp.embed_dropout,
+            embed_type=("thermo" if hp.embed_use_thermo else "embed"),
         ),
         "card": card_model,
+        "tasks": tasks_model,
+        "phase": PaddedEmbed(
+            settings.num_phases,
+            hp.embed_dim,
+            hp.embed_dropout,
+            embed_type="embed",
+        ),
     }
 
     if network_type == "value":
@@ -229,7 +335,6 @@ def get_embed_models(
             num_hidden_layers=hp.hands_num_hidden_layers,
             use_layer_norm=hp.hands_use_layer_norm,
             dropout=hp.hands_dropout,
-            concat_inputs=hp.hands_concat_inputs,
             agg_method=hp.hands_agg_method,
         )
     else:

@@ -15,11 +15,20 @@ CardFilter = Callable[[Card], bool]
 TrickCountType = Literal["capt", "sumothers", "anyother"]
 
 
+def clamp(x):
+    return max(min(x, 1), 0)
+
+
 @dataclass(kw_only=True)
 class Condition:
     settings: Settings
     player: int
+    # Once status changes from unresolved, cannot change again.
+    # Status should change as soon as can be resolved.
     status: Status = "unresolved"
+    # Should always be a number between 0 and 1.
+    # Does not need to be monotonically non-decreasing.
+    partial_value: float = 0.0
 
     def reset(self):
         pass
@@ -67,14 +76,12 @@ class CardCond(Condition):
         if self.status != "unresolved":
             return
 
-        if state.trick_winner == self.player and any(
-            self.card == card for card, _ in state.active_cards
-        ):
-            self.status = "success"
+        if any(self.card == card for card, _ in state.active_cards):
+            self.status = "success" if state.trick_winner == self.player else "fail"
 
     @override
     def on_end(self):
-        if self.status != "success":
+        if self.status == "unresolved":
             self.status = "fail"
 
 
@@ -90,6 +97,7 @@ class CumTrickCond(Condition):
     @override
     def reset(self):
         self.status = "unresolved"
+        self.partial_value = 0
         self.num_tricks_won = 0
         if self.num_tricks == "anyother":
             self.num_other_tricks_won_per_player = [
@@ -98,11 +106,26 @@ class CumTrickCond(Condition):
         else:
             self.num_other_tricks_won = 0
 
+    def get_num_other_tricks(self):
+        if isinstance(self.num_tricks, int):
+            return self.num_tricks
+        elif self.num_tricks in {"capt", "sumothers"}:
+            return self.num_other_tricks_won
+        else:
+            assert self.num_tricks == "anyother"
+            num_other_tricks_won_per_player = [
+                x
+                for i, x in enumerate(self.num_other_tricks_won_per_player)
+                if i != self.player
+            ]
+            return (
+                max(num_other_tricks_won_per_player)
+                if self.direction in [">=", ">"]
+                else min(num_other_tricks_won_per_player)
+            )
+
     @override
     def on_trick_end(self, state: State):
-        if self.status != "unresolved":
-            return
-
         if state.trick_winner == self.player:
             self.num_tricks_won += 1
         else:
@@ -117,30 +140,36 @@ class CumTrickCond(Condition):
             else:
                 assert isinstance(self.num_tricks, int)
 
-    @override
-    def on_end(self):
+        num_other_tricks = self.get_num_other_tricks()
+        comp_ok = compare_dir(self.num_tricks_won, num_other_tricks, self.direction)
+
         if isinstance(self.num_tricks, int):
-            num_other_tricks_won = self.num_tricks
-        elif self.num_tricks in {"capt", "sumothers"}:
-            num_other_tricks_won = self.num_other_tricks_won
+            if self.direction in [">=", ">"] and comp_ok:
+                self.status = "success"
+            elif self.direction in ["<", "<="] and not comp_ok:
+                self.status = "fail"
+            elif self.direction == "=" and self.num_tricks_won > num_other_tricks:
+                self.status = "fail"
+
+        if self.direction in [">=", ">"]:
+            self.partial_value = clamp(1 - (num_other_tricks - self.num_tricks_won) / 3)
+        elif self.direction in ["<=", "<"]:
+            self.partial_value = clamp(1 - (self.num_tricks_won - num_other_tricks) / 3)
         else:
-            assert self.num_tricks == "anyother"
-            num_other_tricks_won_per_player = [
-                x
-                for i, x in enumerate(self.num_other_tricks_won_per_player)
-                if i != self.player
-            ]
-            num_other_tricks_won = (
-                max(num_other_tricks_won_per_player)
-                if self.direction in [">=", ">"]
-                else min(num_other_tricks_won_per_player)
+            self.partial_value = clamp(
+                1 - abs(self.num_tricks_won - num_other_tricks) / 3
             )
 
-        self.status = (
-            "success"
-            if compare_dir(self.num_tricks_won, num_other_tricks_won, self.direction)
-            else "fail"
-        )
+    @override
+    def on_end(self):
+        if self.status == "unresolved":
+            self.status = (
+                "success"
+                if compare_dir(
+                    self.num_tricks_won, self.get_num_other_tricks(), self.direction
+                )
+                else "fail"
+            )
 
 
 @dataclass
@@ -151,40 +180,63 @@ class CumCardCond(Condition):
     other_card_filter: CardFilter | None = None
 
     # Track cards won that match each filter
-    cards_won: int = 0
-    other_cards_won: int = 0
+    num_cards_won: int = 0
+    num_other_cards_won: int = 0
 
     @override
     def reset(self):
         self.status = "unresolved"
-        self.cards_won = 0
-        self.other_cards_won = 0
+        self.partial_value = 0
+        self.num_cards_won = 0
+        self.num_other_cards_won = 0
+
+    def get_num_other_cards(self):
+        return (
+            self.num_cards if self.num_cards is not None else self.num_other_cards_won
+        )
 
     @override
     def on_trick_end(self, state: State):
-        if self.status != "unresolved":
-            return
-
         if state.trick_winner == self.player:
             # Count cards in this trick that match our filters
-            self.cards_won += sum(
+            self.num_cards_won += sum(
                 1 for card, _ in state.active_cards if self.card_filter(card)
             )
             if self.other_card_filter:
-                self.other_cards_won += sum(
+                self.num_other_cards_won += sum(
                     1 for card, _ in state.active_cards if self.other_card_filter(card)
                 )
 
+        num_other_cards = self.get_num_other_cards()
+        comp_ok = compare_dir(self.num_cards_won, num_other_cards, self.direction)
+
+        if self.num_cards is not None:
+            if self.direction in [">=", ">"] and comp_ok:
+                self.status = "success"
+            elif self.direction in ["<", "<="] and not comp_ok:
+                self.status = "fail"
+            elif self.direction == "=" and self.num_cards > num_other_cards:
+                self.status = "fail"
+
+        if self.direction in [">=", ">"]:
+            self.partial_value = clamp(1 - (num_other_cards - self.num_cards_won) / 3)
+        elif self.direction in ["<=", "<"]:
+            self.partial_value = clamp(1 - (self.num_cards_won - num_other_cards) / 3)
+        else:
+            self.partial_value = clamp(
+                1 - abs(self.num_cards_won - num_other_cards) / 3
+            )
+
     @override
     def on_end(self):
-        compare_value = (
-            self.num_cards if self.num_cards is not None else self.other_cards_won
-        )
-        self.status = (
-            "success"
-            if compare_dir(self.cards_won, compare_value, self.direction)
-            else "fail"
-        )
+        if self.status == "unresolved":
+            self.status = (
+                "success"
+                if compare_dir(
+                    self.num_cards_won, self.get_num_other_cards(), self.direction
+                )
+                else "fail"
+            )
 
 
 @dataclass
@@ -204,7 +256,6 @@ class WithCond(Condition):
             (player_card,) = [
                 card for card, player in state.active_cards if player == self.player
             ]
-            # Check if any card in the trick matches our filter
             if self.card_filter(player_card):
                 self.status = "success"
 
@@ -224,6 +275,7 @@ class SweepCond(Condition):
     @override
     def reset(self):
         self.status = "unresolved"
+        self.partial_value = 0
         self.cards_won_per_suit = {i: 0 for i in range(self.settings.num_side_suits)}
 
     @override
@@ -234,16 +286,22 @@ class SweepCond(Condition):
         if state.trick_winner == self.player:
             # Add all cards from this trick to their respective suit sets
             for card, _ in state.active_cards:
-                if not card.is_trump:
-                    self.cards_won_per_suit[card.suit] += 1
+                if card.is_trump:
+                    continue
+                self.cards_won_per_suit[card.suit] += 1
+
+            num_sweeps = sum(
+                x == self.settings.side_suit_length
+                for x in self.cards_won_per_suit.values()
+            )
+            self.partial_value = num_sweeps / self.num_sweeps
+            if num_sweeps >= self.num_sweeps:
+                self.status = "success"
 
     @override
     def on_end(self):
-        num_sweeps = sum(
-            x == self.settings.side_suit_length
-            for x in self.cards_won_per_suit.values()
-        )
-        self.status = "success" if num_sweeps >= self.num_sweeps else "fail"
+        if self.status != "success":
+            self.status = "fail"
 
 
 @dataclass
@@ -251,7 +309,8 @@ class ConsecCond(Condition):
     num_consec: int
     no: bool = False
 
-    won_tricks: set[int] = field(default_factory=set)
+    cur_consec_start: int | None = None
+    cur_consec_end: int | None = None
 
     def __post_init__(self):
         assert self.num_consec >= 2
@@ -259,7 +318,9 @@ class ConsecCond(Condition):
     @override
     def reset(self):
         self.status = "unresolved"
-        self.won_tricks = set()
+        self.partial_value = 0
+        self.cur_consec_start = None
+        self.cur_consec_end = None
 
     @override
     def on_trick_end(self, state: State):
@@ -267,36 +328,37 @@ class ConsecCond(Condition):
             return
 
         if state.trick_winner == self.player:
-            self.won_tricks.add(state.trick)
+            if self.cur_consec_end and state.trick == self.cur_consec_end + 1:
+                self.cur_consec_end += 1
+            else:
+                self.cur_consec_start = state.trick
+                self.cur_consec_end = state.trick
+        else:
+            self.cur_consec_start = None
+            self.cur_consec_end = None
+
+        if self.no:
+            if (
+                self.cur_consec_start is not None
+                and self.cur_consec_end is not None
+                and (self.cur_consec_end - self.cur_consec_start + 1) >= self.num_consec
+            ):
+                self.status = "fail"
+            else:
+                self.partial_value = (state.trick + 1) / self.settings.num_tricks
+        else:
+            if self.cur_consec_start is not None and self.cur_consec_end is not None:
+                num_consec = self.cur_consec_end - self.cur_consec_start + 1
+                self.partial_value = max(
+                    self.partial_value, num_consec / self.num_consec
+                )
+                if num_consec >= self.num_consec:
+                    self.status = "success"
 
     @override
     def on_end(self):
-        cur_consec_start, cur_consec_end = None, None
-        best_consec_start, best_consec_end = None, None
-
-        for trick in self.won_tricks:
-            if cur_consec_end is not None and trick == cur_consec_end + 1:
-                cur_consec_end = trick
-            else:
-                cur_consec_start = cur_consec_end = trick
-
-            if cur_consec_start is not None and (
-                best_consec_start is None
-                or (cur_consec_end - cur_consec_start + 1)
-                > (best_consec_end - best_consec_start + 1)
-            ):
-                best_consec_start = cur_consec_start
-                best_consec_end = cur_consec_end
-
-        best_consec = (
-            0
-            if best_consec_start is None
-            else (best_consec_end - best_consec_start + 1)
-        )
-        if (best_consec >= self.num_consec) == (not self.no):
-            self.status = "success"
-        else:
-            self.status = "fail"
+        if self.status == "unresolved":
+            self.status = "success" if self.no else "fail"
 
 
 @dataclass
@@ -331,15 +393,17 @@ class NoLeadCond(Condition):
     @override
     def reset(self):
         self.status = "unresolved"
+        self.partial_value = 0
+        self.num_bad_lead = 0
 
     @override
     def on_trick_end(self, state: State):
-        if self.status != "unresolved":
-            return
-
         # If we're the leader and we lead a forbidden suit, fail
         if state.leader == self.player and state.active_cards[0][0].suit in self.suits:
             self.status = "fail"
+            self.num_bad_lead += 1
+
+        self.partial_value = clamp(1 - self.num_bad_lead / 2)
 
     @override
     def on_end(self):
@@ -519,9 +583,17 @@ def parse_token(token: str, settings: Settings, player: int) -> Condition:
 
 
 class Task:
-    def __init__(self, formula: str, desc: str = ""):
+    def __init__(self, formula: str, desc: str, difficulty: int, task_idx: int):
         self.formula = formula
         self.desc = desc or formula
+        self.difficulty = difficulty
+        self.task_idx = task_idx
+
+    def __eq__(self, other):
+        return isinstance(other, Task) and self.formula == other.formula
+
+    def __hash__(self):
+        return hash(self.formula)
 
     def __str__(self):
         return self.desc
@@ -531,12 +603,21 @@ class Task:
 
 
 class AssignedTask(Task):
-    def __init__(self, formula: str, player: int, settings: Settings, desc: str = ""):
-        super().__init__(formula, desc=desc)
+    def __init__(
+        self,
+        formula: str,
+        desc: str,
+        difficulty: int,
+        task_idx: int,
+        player: int,
+        settings: Settings,
+    ):
+        super().__init__(formula, desc, difficulty, task_idx)
         self.player = player
         self.settings = settings
         self.parse_formula()
         self.status: Status = "unresolved"
+        self.value = 0
 
     def parse_formula(self):
         tokens = self.formula.split()
@@ -556,19 +637,44 @@ class AssignedTask(Task):
         for cond in self.conds:
             cond.reset()
 
+    def compute_value(self):
+        if self.in_one_trick:
+            self.value = (
+                1 if self.status == "success" else -1 if self.status == "fail" else 0
+            )
+        else:
+            cond_values = []
+            for cond in self.conds:
+                assert 0 <= cond.partial_value <= 1
+                partial_value = (
+                    1 if cond.status == "success" else cond.partial_value * 2 - 1
+                )
+                cond_values.append(partial_value)
+            avg_cond_value = sum(cond_values) / len(cond_values)
+            assert -1 <= avg_cond_value <= 1
+            task_bonus = (
+                self.settings.task_bonus
+                if self.status == "success"
+                else -self.settings.task_bonus
+                if self.status == "fail"
+                else 0
+            )
+            self.value = (avg_cond_value + task_bonus) / (self.settings.task_bonus + 1)
+
+        assert -1 <= self.value <= 1
+
     def on_trick_end(self, state: State) -> None:
-        """on_trick_end task state with new state, on_trick_endd after every trick."""
-        if self.status != "unresolved":
+        """on_trick_end task state with new state, on_trick_end after every trick."""
+        if self.in_one_trick and self.status != "unresolved":
             return
 
         for cond in self.conds:
-            if cond.status != "unresolved":
-                continue
             cond.on_trick_end(state)
             if self.in_one_trick:
                 cond.on_end()
 
         if all(cond.status == "success" for cond in self.conds):
+            assert self.status in ["unresolved", "success"]
             self.status = "success"
 
         if self.in_one_trick:
@@ -577,132 +683,206 @@ class AssignedTask(Task):
                 assert cond.status == "unresolved"
 
         if not self.in_one_trick and any(cond.status == "fail" for cond in self.conds):
+            assert self.status in ["unresolved", "fail"]
             self.status = "fail"
+
+        self.compute_value()
 
     def on_game_end(self) -> None:
         """on_trick_end task state at end of game."""
-        if self.status != "unresolved":
-            return
-
         if self.in_one_trick:
             self.status = "fail"
+            self.compute_value()
             return
 
         for cond in self.conds:
-            if cond.status != "unresolved":
-                continue
-
             cond.on_end()
 
         assert all(cond.status != "unresolved" for cond in self.conds)
         if all(cond.status == "success" for cond in self.conds):
+            assert self.status in ["unresolved", "success"]
             self.status = "success"
         else:
+            assert self.status in ["unresolved", "fail"]
             self.status = "fail"
+
+        self.compute_value()
 
 
 TASK_DEFS = [
-    ("1T 7p with(t)", "I will win 7p with a trump"),
+    ("1T 7p with(t)", "I will win 7p with a submarine.", 3),
     (
         "1T #rank(>6)=0 #t=0",
-        "I will a trick of which the card values are greater than 6. No trumps are allowed in the trick.",
+        "I will win a trick of which the card values are all less than 7. Submarines are not allowed in the trick.",
+        3,
     ),
     (
         "1T #p=#b #p>0",
         "I will win as many pink as blue cards in one trick. 0 pink/blue cards is not allowed.",
+        3,
     ),
-    ("1T #8>=1 with(4)", "I will win an 8 with a 4."),
-    ("1T with(5)", "I will win a trick using a 5"),
-    ("1T with(3)", "I will win a trick using a 3"),
+    ("1T #8>=1 with(4)", "I will win an 8 with a 4.", 4),
+    ("1T with(5)", "I will win a trick using a 5", 3),
+    ("1T with(3)", "I will win a trick using a 3", 4),
     (
         "1T sum>28 #t=0",
-        "I will win a trick with a sum greater than 28. No trumps are allowed in the trick.",
+        "I will win a trick with a total value greater than 28. Submarines are not allowed in the trick.",
+        3,
     ),
-    ("1T sum<12 #t=0", ""),
-    ("1T sum>=22 sum<=23 #t=0", ""),
-    ("1T #6>=2 with(6)", ""),
-    ("1T #odd=0", ""),
-    ("1T with(2)", ""),
-    ("1T #rank(<=5)=0 #t=0", ""),
-    ("1T #even=0", ""),
-    ("1T T-1 2g", ""),
-    ("1T with(6)", ""),
-    ("1T #5>=1 with(7)", ""),
-    ("1T 9g with(b)", ""),
-    ("T0 T-1", ""),
-    ("#T<#T(capt)", ""),
-    ("T0 T1 T2", ""),
-    ("6g", ""),
-    ("#7>=2", ""),
-    ("5p 6y", ""),
-    ("#T=2", ""),
-    ("#g=2", ""),
-    ("#sweep>=1", ""),
-    ("#T>#T(sumothers)", ""),
-    ("#t=0", ""),
-    ("#T=#T(capt)", ""),
-    ("8p 5b", ""),
-    ("#p>=5", ""),
-    ("#t=2", ""),
-    ("consec(2) #T=2", ""),
-    ("#t=3", ""),
-    ("T-1", ""),
-    ("9p 8y", ""),
-    ("3p", ""),
-    ("9y 7b", ""),
-    ("#T=1", ""),
-    ("consec(3)", ""),
-    ("#T=0", ""),
-    ("no(T0) no(T1) no(T2)", ""),
-    ("2t #t=1", ""),
-    ("#p>=1 #g>=1 #y>=1 #b>=1", ""),
-    ("#b=2", ""),
-    ("#p=1", ""),
-    ("#5=0", ""),
-    ("3t", ""),
-    ("#T>#T(capt)", ""),
-    ("T0", ""),
-    ("1y", ""),
-    ("#T>#T(anyother)", ""),
-    ("consec(3) #T=3", ""),
-    ("#6=3", ""),
-    ("T0 T1", ""),
-    ("#t=1", ""),
-    ("#p=0", ""),
-    ("1t #t=1", ""),
-    ("consec(2)", ""),
-    ("1p 7g", ""),
-    ("#9>=3", ""),
-    ("T-1 #T=1", ""),
-    ("1b 2b 3b", ""),
-    ("#g=#y #g>0", ""),
-    ("T0 #T=1", ""),
-    ("#9=2", ""),
-    ("nolead(y,p,b)", ""),
-    ("#p>#g", ""),
-    ("#y>=7", ""),
-    ("#p=0 #b=0", ""),
-    ("no(consec(2))", ""),
-    ("#8=0 #9=0", ""),
-    ("#1=0", ""),
-    ("#p=1 #g=1", ""),
-    ("3g 4y 5y", ""),
-    ("no(T0) no(T1) no(T2) no(T3) no(T4)", ""),
-    ("3b 3g 3y 3p", ""),
-    ("#y>#b", ""),
-    ("#g=0", ""),
-    ("#y=0", ""),
-    ("#1=0 #2=0 #3=0", ""),
-    ("#T=4", ""),
-    ("#5>=3", ""),
-    ("#p=#y #p>0", ""),
-    ("nolead(p,g)", ""),
-    ("#T<#T(anyother)", ""),
-    ("#9=0", ""),
-    ("#y=0 #g=0", ""),
-    ("no(T0) no(T1) no(T2) no(T3)", ""),
-    ("6b 7y", ""),
-    ("5g 8b", ""),
-    ("9b 9p 9y 9g", ""),
-    ("4b", ""),
+    (
+        "1T sum<12 #t=0",
+        "I will win a trick with a total value less than 12. Submarines are not allowed in the trick.",
+        3,
+    ),
+    (
+        "1T sum>=22 sum<=23 #t=0",
+        "I will win a trick with a total value of 22 or 23. Submarines are not allowed in the trick.",
+        3,
+    ),
+    ("1T #6>=2 with(6)", "I will win a 6 with another 6.", 3),
+    ("1T #odd=0", "I will win a trick that contains only even-numbered cards.", 5),
+    (
+        "1T #g=#y #g>0",
+        "I will win as many green as yellow cards in one trick. 0 green/yellow cards is not allowed.",
+        3,
+    ),
+    ("1T with(2)", "I will win a trick using a 2.", 4),
+    (
+        "1T #rank(<=5)=0",
+        "I will win a trick of which the card values are all greater than 5.",
+        4,
+    ),
+    ("1T #even=0", "I will win a trick that contains only odd-numbered cards.", 4),
+    ("1T T-1 2g", "I will win 2g in the final trick of the game.", 4),
+    ("1T with(6)", "I will win a trick using a 6.", 3),
+    ("1T #5>=1 with(7)", "I will win a 5 with a 7.", 2),
+    ("1T 9g with(t)", "I will the 9g with a submarine.", 3),
+    ("T0 T-1", "I will win the frist and the last trick.", 4),
+    (
+        "#T<#T(capt)",
+        "I will win fewer tricks than the captain. I am not the captain",
+        2,
+    ),
+    ("T0 T1 T2", "I will win the first 3 tricks.", 3),
+    ("6g", "I will win 6g", 1),
+    ("#7>=2", "I will win at least 2 7's.", 2),
+    ("5p 6y", "I will win 5p 6y.", 2),
+    ("#T=2", "I will win exactly 2 tricks.", 2),
+    ("#g=2", "I will win exactly 2 greens.", 4),
+    ("#sweep>=1", "I will win all the cards in at least one of the 4 colors.", 4),
+    ("#T>#T(sumothers)", "I will more tricks than everyone else combined.", 4),
+    ("#t=0", "I will win no submarines.", 1),
+    (
+        "#T=#T(capt)",
+        "I will win as many tricks as the captain. I am not the captain.",
+        3,
+    ),
+    ("8p 5b", "I will win 8p and 5b.", 2),
+    ("#p>=5", "I will at least 5 pinks.", 3),
+    ("#t=2", "I will win exactly 2 submarines.", 3),
+    ("consec(2) #T=2", "I will win exactly 2 tricks and they will be in a row.", 3),
+    ("#t=3", "I will win exactly 3 submarines.", 4),
+    ("T-1", "I will win the last trick.", 3),
+    ("9p 8y", "I will win 9p 8y.", 3),
+    ("3p", "I will win 3p.", 1),
+    ("9y 7b", "I will win 9y and 7b.", 3),
+    ("#T=1", "I will win exactly 1 trick.", 2),
+    ("consec(3)", "I will win 3 tricks in a row.", 3),
+    ("#T=0", "I will 0 tricks.", 3),
+    ("no(T0) no(T1) no(T2)", "I will win none of the first 3 tricks.", 2),
+    ("2t #t=1", "I will 2t and no other submarine.", 3),
+    ("#p>=1 #g>=1 #y>=1 #b>=1", "I will win at least one card of each color.", 3),
+    ("#b=2", "I will win exactly 2 blues.", 4),
+    ("#p=1", "I will win exactly 1 pink.", 3),
+    ("#5=0", "I will no 5", 2),
+    ("3t", "I will win 3t.", 1),
+    (
+        "#T>#T(capt)",
+        "I will win more tricks than the captain. I am not the captain.",
+        2,
+    ),
+    ("T0", "I will win the first trick.", 1),
+    ("1y", "I will win 1y.", 1),
+    ("#T>#T(anyother)", "I will win more tricks than anyone else.", 3),
+    ("consec(3) #T=3", "I will win exactly 3 tricks and they will be in a row.", 3),
+    ("#6=3", "I will win exactly 3 6's.", 4),
+    ("T0 T1", "I will win the first 2 tricks.", 1),
+    ("#t=1", "I will win exactly 1 submarine.", 3),
+    ("#p=0", "I will win no pink.", 2),
+    ("1t #t=1", "I will win 1t and no other submarine.", 3),
+    ("consec(2)", "I will win 2 tricks in a row.", 1),
+    ("1p 7g", "I will win 1p and 7g.", 2),
+    ("#9>=3", "I will win at least 3 9's.", 4),
+    ("T-1 #T=1", "I will win only the last trick.", 4),
+    ("1b 2b 3b", "I will win 1b 2b 3b.", 3),
+    ("T0 #T=1", "I will win only the first trick.", 3),
+    ("#9=2", "I will win exactly 2 9's.", 3),
+    ("nolead(y,p,b)", "I will not open a trick with yellow, pink, or blue.", 3),
+    ("#p>#g", "I will win more pink than green cards. 0 green cards is allowed.", 1),
+    ("#y>=7", "I will win at least 7 yellows.", 3),
+    ("#p=0 #b=0", "I will win no pink or blues.", 3),
+    ("no(consec(2))", "I will never win 2 tricks in a row.", 2),
+    ("#8=0 #9=0", "I will win no 8 or 9's.", 3),
+    ("#1=0", "I will win no 1.", 2),
+    ("#p=1 #g=1", "I will win exactly 1p and 1g.", 4),
+    ("3g 4y 5y", "I will 3g 4y and 5y.", 4),
+    ("no(T0) no(T1) no(T2) no(T3) no(T4)", "I will none of the first 5 tricks.", 3),
+    ("3b 3g 3y 3p", "I will win 3b 3g 3y 3p.", 4),
+    ("#y>#b", "I will more yellow than blue cards. 0 blue cards is allowed", 1),
+    ("#g=0", "I will win no greens.", 2),
+    ("#y=0", "I will no yellows.", 2),
+    ("#1=0 #2=0 #3=0", "I will no win 1, 2, or 3's.", 3),
+    ("#T=4", "I will win exactly 4 tricks.", 3),
+    ("#5>=3", "I will win at least 3 5's.", 4),
+    (
+        "#p=#y #p>0",
+        "I will win as many pink as yellow cards. 0 pink/yellow cards is not allowed.",
+        4,
+    ),
+    ("nolead(p,g)", "I will not open with a pink or green.", 1),
+    ("#T<#T(anyother)", "I will win fewer tricks than anyone else.", 2),
+    ("#9=0", "I will win no 9.", 1),
+    ("#y=0 #g=0", "I will win no yellow or greens.", 3),
+    ("no(T0) no(T1) no(T2) no(T3)", "I will win none of the first 4 tricks.", 2),
+    ("6b 7y", "I will the 6b and 7y.", 2),
+    ("5g 8b", "I will win the 5g and 8b.", 2),
+    ("9b 9p 9y 9g", "I will win 9b 9p 9y 9g.", 5),
+    ("4b", "I will win 4b.", 1),
 ]
+
+EASY_TASK_DEFS = [
+    ("#T>=1", "I will win at least one trick.", 1),
+    ("#T>=2", "I will win at least two tricks.", 1),
+]
+
+MED_TASK_DEFS = [
+    ("4b", "I will win 4b.", 1),
+    ("nolead(p,g)", "I will not open with a pink or green.", 1),
+    ("3p", "I will win 3p.", 1),
+    ("1y", "I will win 1y.", 1),
+    ("#t=0", "I will win no submarines.", 1),
+    ("3t", "I will win 3t.", 1),
+    ("T0", "I will win the first trick.", 1),
+    ("6g", "I will win 6g", 1),
+    ("#p>#g", "I will win more pink than green cards. 0 green cards is allowed.", 1),
+    ("T0 T1", "I will win the first 2 tricks.", 1),
+    ("#T<#T(anyother)", "I will win fewer tricks than anyone else.", 2),
+    ("#y=0", "I will no yellows.", 2),
+    ("#T=2", "I will win exactly 2 tricks.", 2),
+    ("#1=0", "I will win no 1.", 2),
+    ("#p=0", "I will win no pink.", 2),
+    ("consec(2) #T=2", "I will win exactly 2 tricks and they will be in a row.", 3),
+    ("9y 7b", "I will win 9y and 7b.", 3),
+    ("consec(3) #T=3", "I will win exactly 3 tricks and they will be in a row.", 3),
+    ("1T 7p with(t)", "I will win 7p with a submarine.", 3),
+    ("1T with(6)", "I will win a trick using a 6.", 3),
+]
+
+
+def get_task_defs(bank):
+    if bank == "all":
+        return TASK_DEFS
+    elif bank == "easy":
+        return EASY_TASK_DEFS
+    elif bank == "med":
+        return MED_TASK_DEFS

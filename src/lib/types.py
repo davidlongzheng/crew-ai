@@ -1,6 +1,7 @@
-from typing import Any
+from typing import Any, TypeAlias
 
-StrMap = dict[str, Any]
+StrMap: TypeAlias = dict[str, Any]
+TaskIdxs: TypeAlias = list[tuple[int, int]]
 
 
 def req[T](x: T | None) -> T:

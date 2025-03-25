@@ -24,7 +24,7 @@ def embed_models(hp, settings):
 def get_rand_cards(shape, settings: Settings) -> torch.Tensor:
     cards = torch.stack(
         [
-            torch.randint(0, settings.num_ranks, shape),
+            torch.randint(0, settings.max_suit_length, shape),
             torch.randint(0, settings.num_suits, shape),
         ],
         dim=-1,
@@ -37,7 +37,7 @@ def test_card_model_initialization(settings: Settings, embed_models, hp):
 
     assert isinstance(model.rank_embed, PaddedEmbed)
     assert isinstance(model.suit_embed, PaddedEmbed)
-    assert model.rank_embed.embed.num_embeddings == settings.num_ranks + 1
+    assert model.rank_embed.embed.num_embeddings == settings.max_suit_length + 1
     assert model.suit_embed.embed.num_embeddings == settings.num_suits + 1
     assert model.rank_embed.embed.embedding_dim == hp.embed_dim
     assert model.suit_embed.embed.embedding_dim == hp.embed_dim
@@ -103,7 +103,7 @@ def test_hand_model_forward(settings: Settings, hp, embed_models):
 
 
 def test_get_embed_models(settings: Settings, hp: Hyperparams):
-    models = get_embed_models(hp, settings)
+    models = get_embed_models(hp, settings, "policy")
 
     assert len(models) == 5
     assert all(key in models for key in ["player", "trick", "turn", "card", "hand"])

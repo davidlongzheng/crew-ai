@@ -1,30 +1,33 @@
 from __future__ import absolute_import
 
-import functools
 import shutil
 import time
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import asdict
+from functools import cache
 from pathlib import Path
 from typing import Any, cast
 
 import click
 import numpy as np
 import torch
-import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_
 from loguru import logger
 from tensordict import TensorDict
+from torch import nn
+from torch.nn.utils import clip_grad_norm_
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from ..game.settings import SETTINGS_TYPE, Settings, easy_settings
+from ..game.settings import SETTINGS_TYPE, Settings, get_preset
+from .aux_info import get_aux_info_spec, set_aux_info_hist_only
 from .featurizer import featurize
 from .hyperparams import HP_TYPE, Hyperparams
 from .models import PolicyModel, ValueModel, get_models
 from .rollout import do_batch_rollout
 from .summary_writer import CustomSummaryWriter
+from .win_cache import CANON_WIN_CACHE_DIR, load_cache
 
 
 def num_params(model):
@@ -64,7 +67,7 @@ def create_optim(models, lr: float, weight_decay: float):
         {"params": other_params},
         {"params": no_wd_params, "weight_decay": 0},
     ]
-    optimizer = optim.AdamW(
+    optimizer = torch.optim.AdamW(
         param_groups,
         lr=lr,
         weight_decay=weight_decay,
@@ -72,21 +75,34 @@ def create_optim(models, lr: float, weight_decay: float):
     return optimizer
 
 
-@functools.lru_cache
-def gae_advantage_discount(num_moves, gae_gamma, gae_lambda, device, dtype):
+def create_lr_sched(optimizer, lr_schedule, num_rounds, lr, lr_min_frac):
+    if lr_schedule == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=num_rounds,
+            eta_min=lr * lr_min_frac,
+        )
+    elif lr_schedule == "linear":
+        return torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lambda x: 1 - (x / (num_rounds - 1)) * (1 - lr_min_frac)
+        )
+    else:
+        assert lr_schedule == "constant", lr_schedule
+        return torch.optim.lr_scheduler.ConstantLR(
+            optimizer,
+            factor=1.0,
+        )
+
+
+@cache
+def gae_advantage_discount(num_moves, gae_lambda, device, dtype):
     i = torch.arange(num_moves).view(-1, 1)
     j = torch.arange(num_moves).view(1, -1)
     exponent = i - j
     mask = exponent >= 0
-    factor = gae_gamma * gae_lambda
     return torch.where(
-        mask, factor**exponent, torch.zeros_like(exponent, dtype=dtype)
+        mask, gae_lambda**exponent, torch.zeros_like(exponent, dtype=dtype)
     ).to(device)
-
-
-@functools.lru_cache
-def gae_gamma_discount(num_moves, gae_gamma, device):
-    return gae_gamma ** torch.arange(num_moves - 1, -1, -1).to(device)
 
 
 class Timer:
@@ -112,44 +128,114 @@ class Timer:
 
 def compute_advantage(
     td: TensorDict,
-    gae_gamma: float,
     gae_lambda: float,
     value_model: ValueModel,
 ):
     with torch.no_grad():
-        td["orig_values"] = value_model(td["inps"])
+        td["orig_values"], _ = value_model(td["inps"])
 
     values = td["orig_values"]
     T = values.shape[-1]
     # only handle this case if it comes to that.
     assert (td["inps"]["seq_lengths"] == T).all()
-    fut_values = gae_gamma * torch.roll(values, shifts=-1, dims=-1)
-    fut_values[..., -1] = td["rewards"]
+    fut_values = torch.roll(values, shifts=-1, dims=-1)
+    fut_values[..., -1] = 0.0
     # resids here refers to Bellman TD residuals.
-    resids = fut_values - values
-    advantages = resids @ gae_advantage_discount(
-        T, gae_gamma, gae_lambda, td.device, resids.dtype
-    )
-    value_targets = torch.einsum(
-        "n,t->nt", td["rewards"], gae_gamma_discount(T, gae_gamma, td.device)
-    )
-    norm_advantages = (advantages - advantages.mean()) / advantages.std()
+    resids = td["rewards"] + fut_values - values
+    advantages = resids @ gae_advantage_discount(T, gae_lambda, td.device, resids.dtype)
+    value_targets = td["rewards"].flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1])
+
+    # (N, T)
+    # More than one valid action
+    mask = (td["inps", "valid_actions"][..., 0] != -1).sum(dim=-1) > 1
+    # (N*T)
+    mask = mask.reshape((-1,))
+    masked_advantage = advantages.reshape((-1,))[mask]
+    advantage_mean, advantage_std = masked_advantage.mean(), masked_advantage.std()
+    norm_advantages = (advantages - advantage_mean) / advantage_std
 
     td["unnorm_advantages"] = advantages
     td["advantages"] = norm_advantages
     td["value_targets"] = value_targets
 
 
+@cache
+def get_mse_loss():
+    return nn.MSELoss()
+
+
+@cache
+def get_cross_entropy_loss():
+    return nn.CrossEntropyLoss()
+
+
+@cache
+def get_smooth_l1_loss(beta):
+    return nn.SmoothL1Loss(beta=beta)
+
+
+def compute_aux_info_loss(td, spec, separate=False):
+    num_cont = spec["num_cat"].isna().sum()
+    assert spec["num_cat"].head(num_cont).isna().all(), (
+        "Continuous vars must be at the beginning of the spec."
+    )
+
+    targets = td["aux_infos"]
+    preds = td["aux_info_preds"]
+    weights = torch.tensor(spec["weight"], device=targets.device)
+    if separate:
+        losses = []
+    else:
+        loss = 0
+
+    if num_cont:
+        cont_targets = targets[..., :num_cont]
+        cont_preds = preds[..., :num_cont]
+        cont_weights = weights[:num_cont]
+        cont_loss = cont_weights * (cont_preds - cont_targets) ** 2
+        if separate:
+            losses += torch.mean(cont_loss, dim=(0, 1)).tolist()
+        else:
+            loss += torch.mean(cont_loss)
+
+    num_cats = spec["num_cat"].iloc[num_cont:].astype(int)
+    cat_weights = weights[num_cont:]
+    cat_targets = targets[..., num_cont:].long()
+    cat_preds = preds[..., num_cont:]
+    cur_pred_idx = 0
+    for i, (cat_weight, num_cat) in enumerate(zip(cat_weights, num_cats)):
+        cat_target = cat_targets[..., i]
+        cat_pred = cat_preds[..., cur_pred_idx : cur_pred_idx + num_cat]
+        cat_loss = cat_weight * get_cross_entropy_loss()(
+            cat_pred.reshape((-1, cat_pred.shape[-1])),
+            cat_target.reshape((-1,)),
+        )
+        cur_pred_idx += num_cat
+        if separate:
+            losses.append(cat_loss.item())
+        else:
+            loss += cat_loss
+
+    if separate:
+        return losses
+    else:
+        return loss
+
+
 def compute_policy_loss(
     td,
+    aux_info_spec,
     ppo_clip_ratio,
+    ppo_coef,
     entropy_coef,
+    aux_info_coef,
 ):
     # (N, T)
     actions = td["actions"]
     # (N, T, H)
+    orig_probs = td["orig_probs"]
+    probs = td["probs"]
     orig_log_probs = td["orig_log_probs"]
-    # (N, T, H)
     log_probs = td["log_probs"]
     # (N, T)
     advantages = td["advantages"]
@@ -158,16 +244,17 @@ def compute_policy_loss(
     assert (td["inps"]["seq_lengths"] == advantages.shape[1]).all()
 
     # (N, T)
-    orig_action_log_probs = torch.gather(
-        orig_log_probs, dim=-1, index=actions.unsqueeze(-1)
+    orig_action_probs = torch.gather(
+        orig_probs, dim=-1, index=actions.unsqueeze(-1)
     ).squeeze(-1)
     # (N, T)
-    action_log_probs = torch.gather(
-        log_probs,
+    action_probs = torch.gather(
+        probs,
         dim=-1,
         index=actions.unsqueeze(-1),
     ).squeeze(-1)
     # (N, T)
+    # At least one valid action
     mask = (td["inps", "valid_actions"][..., 0] != -1).sum(dim=-1) > 1
     # (N*T)
     mask = mask.reshape((-1,))
@@ -184,52 +271,58 @@ def compute_policy_loss(
             (1 - ppo_clip_ratio) * advantages,
         )
 
-    raw = torch.exp(action_log_probs - orig_action_log_probs) * advantages
+    raw = (action_probs / orig_action_probs) * advantages
     ceil = g(advantages)
     ppo_loss = masked_mean(-torch.minimum(raw, ceil))
-    min_ppo_loss = masked_mean(-ceil)
     frac_clipped = masked_mean((raw > ceil).float())
-    eps = np.log(1e-8)
-    clamped_log_probs = log_probs.clamp(min=eps)
-    clamped_orig_log_probs = orig_log_probs.clamp(min=eps)
-    entropy_loss = entropy_coef * masked_mean(
-        torch.sum(torch.exp(clamped_log_probs) * clamped_log_probs, dim=-1)
-    )
+    eps = 1e-8
+    log_eps = np.log(eps)
+    clamped_probs = probs.clamp(min=eps)
+    clamped_orig_probs = orig_probs.clamp(min=eps)
+    clamped_log_probs = log_probs.clamp(min=log_eps)
+    clamped_orig_log_probs = orig_log_probs.clamp(min=log_eps)
+    entropy_loss = masked_mean(torch.sum(clamped_probs * clamped_log_probs, dim=-1))
     kl_loss = masked_mean(
         torch.sum(
-            torch.exp(clamped_orig_log_probs)
-            * (clamped_orig_log_probs - clamped_log_probs),
+            clamped_orig_probs * (clamped_orig_log_probs - clamped_log_probs),
             dim=-1,
         )
     )
-    combined_loss = ppo_loss + entropy_loss
 
-    return {
+    combined_loss = ppo_coef * ppo_loss + entropy_coef * entropy_loss
+    if aux_info_coef:
+        aux_info_loss = compute_aux_info_loss(
+            td,
+            aux_info_spec,
+        )
+        combined_loss += aux_info_coef * aux_info_loss
+
+    ret = {
         "loss": combined_loss,
         "ppo_loss": ppo_loss,
         "entropy_loss": entropy_loss,
         "kl_loss": kl_loss,
-        "min_ppo_loss": min_ppo_loss,
         "frac_clipped": frac_clipped,
     }
+    if aux_info_coef:
+        ret["aux_info_loss"] = aux_info_loss
+
+    return ret
 
 
 def compute_value_loss(
     td,
+    aux_info_spec,
     method,
     smooth_l1_beta,
+    value_coef,
+    aux_info_coef,
 ):
-    def get_loss(x, y):
+    def get_value_loss(x, y):
         if method == "mse":
-            return torch.mean((x - y) ** 2)
+            return get_mse_loss()(x, y)
         elif method == "smoothl1":
-            return torch.mean(
-                torch.where(
-                    torch.abs(x - y) < smooth_l1_beta,
-                    0.5 * (x - y) ** 2 / smooth_l1_beta,
-                    torch.abs(x - y) - 0.5 * smooth_l1_beta,
-                )
-            )
+            return get_smooth_l1_loss(smooth_l1_beta)(x, y)
         else:
             raise ValueError(method)
 
@@ -237,11 +330,24 @@ def compute_value_loss(
     # only handle this case if it comes to that.
     assert (td["inps"]["seq_lengths"] == values.shape[1]).all()
     value_targets = td["value_targets"]
-    return {
-        "loss": get_loss(values, value_targets),
-        "loss_t0": get_loss(values[:, 0], value_targets[:, 0]),
-        "loss_t-1": get_loss(values[:, -1], value_targets[:, -1]),
+    value_loss = get_value_loss(values, value_targets)
+
+    combined_loss = value_coef * value_loss
+    if aux_info_coef:
+        aux_info_loss = compute_aux_info_loss(
+            td,
+            aux_info_spec,
+        )
+        combined_loss += aux_info_coef * aux_info_loss
+
+    ret = {
+        "loss": combined_loss,
+        "value_loss": value_loss,
     }
+    if aux_info_coef:
+        ret["aux_info_loss"] = aux_info_loss
+
+    return ret
 
 
 def get_train_data(
@@ -251,6 +357,7 @@ def get_train_data(
     policy_model: PolicyModel,
     timer: Timer,
     round: int,
+    engine_seeds: list[int] | None,
 ):
     def pad_seq(inp, *, dtype=None):
         return pad_sequence(
@@ -259,11 +366,12 @@ def get_train_data(
         )
 
     timer.start("rollout")
-    seed = int(torch.randint(0, 100000, ()))
+    seed = int(torch.randint(0, 100_000_000, ()))
     rollouts = do_batch_rollout(
         settings,
         num_rollouts=hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
-        seed=seed,
+        batch_seed=seed,
+        engine_seeds=engine_seeds,
         policy_model=policy_model,
         device=device,
     )
@@ -274,13 +382,15 @@ def get_train_data(
         public_history=[x["public_history"] for x in rollouts],
         private_inputs=[x["private_inputs"] for x in rollouts],
         valid_actions=[x["valid_actions"] for x in rollouts],
+        task_idxs=[x["task_idxs"] for x in rollouts],
         non_feature_dims=2,
         settings=settings,
         device=device,
     )
     actions = pad_seq([x["actions"] for x in rollouts])
+    orig_probs = pad_seq([x["probs"] for x in rollouts])
     orig_log_probs = pad_seq([x["log_probs"] for x in rollouts])
-    rewards = torch.tensor([x["reward"] for x in rollouts], device=device)
+    rewards = pad_seq([x["rewards"] for x in rollouts])
     frac_success = torch.tensor(
         [
             np.sum([y[0] for y in x["num_success_tasks_pp"]])
@@ -289,12 +399,21 @@ def get_train_data(
         ],
         device=device,
     )
+    win = torch.tensor(
+        [x["win"] for x in rollouts],
+        device=device,
+    )
+    aux_infos = pad_seq([x["aux_infos"] for x in rollouts])
+
     td = TensorDict(
         inps=inps,
         actions=actions,
+        orig_probs=orig_probs,
         orig_log_probs=orig_log_probs,
         rewards=rewards,
         frac_success=frac_success,
+        win=win,
+        aux_infos=aux_infos,
     )
     td.auto_batch_size_()
     timer.finish("featurize", round)
@@ -303,43 +422,52 @@ def get_train_data(
 
 
 def train_one_epoch(
+    epoch,
     mode,
     network_type,
     data_loader,
     hp,
     optim,
     model,
+    aux_info_spec,
 ):
     running_losses = Counter()
     num_steps_in_epoch = 0
     for td_batch in data_loader:
-        out_key = "log_probs" if network_type == "policy" else "values"
         if mode == "train":
             optim.zero_grad()
-            td_batch[out_key] = model(td_batch["inps"])
-        else:
-            with torch.no_grad():
-                td_batch[out_key] = model(td_batch["inps"])
+
+        with torch.no_grad() if mode == "val" else nullcontext():
+            if network_type == "policy":
+                (
+                    (td_batch["probs"], td_batch["log_probs"]),
+                    td_batch["aux_info_preds"],
+                ) = model(td_batch["inps"])
+            else:
+                td_batch["values"], td_batch["aux_info_preds"] = model(td_batch["inps"])
         if network_type == "policy":
             losses = compute_policy_loss(
                 td_batch,
-                hp.ppo_clip_ratio,
-                hp.entropy_coef,
+                aux_info_spec,
+                hp.policy_ppo_clip_ratio,
+                hp.policy_ppo_coef,
+                hp.policy_entropy_coef,
+                hp.policy_aux_info_coef,
             )
         else:
             losses = compute_value_loss(
                 td_batch,
+                aux_info_spec,
                 hp.value_loss_method,
                 hp.value_smooth_l1_beta,
+                hp.value_coef,
+                hp.value_aux_info_coef,
             )
 
         if mode == "train":
             losses["loss"].backward()
             if hp.grad_norm_clip:
                 clip_grad_norm_(model.parameters(), hp.grad_norm_clip)
-            import ipdb
-
-            ipdb.set_trace()
             optim.step()
 
         for k, v in losses.items():
@@ -365,10 +493,13 @@ def train_one_round(
     hp,
     policy_optim,
     value_optim,
+    policy_lr_sched,
+    value_lr_sched,
     gc,
     writer,
     log_epoch,
     outdir,
+    aux_info_spec,
 ):
     train_data_loader = DataLoader(
         td[: hp.num_train_rollouts_per_round],
@@ -384,12 +515,31 @@ def train_one_round(
         drop_last=False,
         collate_fn=lambda x: x,
     )
-    for network_type in ["policy"]:
+    network_types = []
+    if hp.train_policy:
+        network_types.append("policy")
+    if hp.train_value:
+        network_types.append("value")
+
+    for network_type in network_types:
         logger.info(f"Training {network_type} network")
         model = policy_model if network_type == "policy" else value_model
         optim = policy_optim if network_type == "policy" else value_optim
         best_loss_epoch, best_loss = None, float("inf")
-        for epoch in range(hp.num_epochs_per_round):
+        num_epochs_per_round = (
+            hp.policy_num_epochs_per_round
+            if network_type == "policy"
+            else hp.value_num_epochs_per_round
+        )
+        early_stop_num_epochs = (
+            hp.policy_early_stop_num_epochs
+            if network_type == "policy"
+            else hp.value_early_stop_num_epochs
+        )
+        lr_sched = policy_lr_sched if network_type == "policy" else value_lr_sched
+        writer.add_scalar(f"lr/{network_type}", lr_sched.get_last_lr()[0], round)
+        policy_kl = None
+        for epoch in range(num_epochs_per_round):
             if log_epoch:
                 logger.info(f"Epoch {epoch}")
             for mode in ["train", "val"]:
@@ -403,69 +553,95 @@ def train_one_round(
                     losses,
                     num_steps_in_epoch,
                 ) = train_one_epoch(
+                    epoch=epoch,
                     mode=mode,
                     network_type=network_type,
                     data_loader=data_loader,
                     hp=hp,
                     optim=optim,
                     model=model,
+                    aux_info_spec=aux_info_spec,
                 )
                 if mode == "train":
                     gc[f"{network_type}_num_steps"] += num_steps_in_epoch
                     gc[f"{network_type}_num_epochs"] += 1
 
                 for k, v in losses.items():
-                    writer.add_scalar(
-                        f"loss/{network_type}_{k}_{mode}",
-                        v,
-                        gc[f"{network_type}_num_epochs"],
-                    )
+                    if k == "loss":
+                        writer.add_scalar(
+                            f"main_loss/{network_type}_{k}_{mode}",
+                            v,
+                            gc[f"{network_type}_num_epochs"],
+                        )
+                    else:
+                        writer.add_scalar(
+                            f"{network_type}_aux_loss/{network_type}_{k}_{mode}",
+                            v,
+                            gc[f"{network_type}_num_epochs"],
+                        )
 
                 if mode == "train":
                     gc[f"{network_type}_num_rollouts"] += (
                         hp.num_train_rollouts_per_round
                     )
                     writer.add_scalar(
-                        "counter/num_rollouts",
+                        f"counter/{network_type}_num_rollouts",
                         gc[f"{network_type}_num_rollouts"],
                         gc[f"{network_type}_num_epochs"],
                     )
                     writer.add_scalar(
-                        "counter/round", round, gc[f"{network_type}_num_epochs"]
+                        f"counter/{network_type}_round",
+                        round,
+                        gc[f"{network_type}_num_epochs"],
                     )
                     writer.add_scalar(
-                        "counter/num_steps",
+                        f"counter/{network_type}_num_steps",
                         gc[f"{network_type}_num_steps"],
                         gc[f"{network_type}_num_epochs"],
                     )
+
+                if mode == "train" and network_type == "policy":
+                    policy_kl = losses["kl_loss"]
 
                 if mode == "val" and losses["loss"] < best_loss:
                     best_loss_epoch, best_loss = epoch, losses["loss"]
 
             if (
-                hp.early_stop_num_epochs
-                and epoch - best_loss_epoch >= hp.early_stop_num_epochs
+                early_stop_num_epochs
+                and epoch - best_loss_epoch >= early_stop_num_epochs
             ):
-                logger.debug(f"Early stopping {network_type} at {epoch}")
+                logger.debug(f"Early stopping {network_type} at epoch {epoch}")
+                break
+
+            if network_type == "policy" and policy_kl > hp.policy_early_stop_max_kl:
+                logger.debug(
+                    f"Max KL reached for {network_type} at epoch {epoch}. Early stopping."
+                )
                 break
 
             (outdir / "_keep").touch()
+
+        lr_sched.step()
 
 
 def train(
     device: torch.device,
     policy_model: PolicyModel,
     value_model: ValueModel,
-    policy_optim: optim.Optimizer,
-    value_optim: optim.Optimizer,
+    policy_optim: torch.optim.Optimizer,
+    value_optim: torch.optim.Optimizer,
+    policy_lr_sched: torch.optim.lr_scheduler.LRScheduler,
+    value_lr_sched: torch.optim.lr_scheduler.LRScheduler,
     settings: Settings,
     hp: Hyperparams,
     writer: SummaryWriter,
     outdir: Path,
     start_round: int,
+    gc: Counter,
+    engine_seeds: list[int] | None,
 ) -> None:
     timer = Timer(writer, log_first=True)
-    gc: Counter = Counter()
+    aux_info_spec = get_aux_info_spec(settings)
 
     for round in range(start_round, hp.num_rounds):
         logger.info(f"Round {round}")
@@ -478,13 +654,16 @@ def train(
             policy_model=policy_model,
             timer=timer,
             round=round,
+            engine_seeds=engine_seeds,
         )
 
-        mean_reward = td["rewards"].mean()
+        mean_reward = td["rewards"].sum(dim=-1).mean()
         writer.add_scalar("rewards/reward_mean", mean_reward, round)
         mean_frac_success = td["frac_success"].mean()
+        win_rate = td["win"].float().mean()
         assert mean_frac_success <= 1.0
         writer.add_scalar("rewards/frac_success_mean", mean_frac_success, round)
+        writer.add_scalar("rewards/win_rate", win_rate, round)
 
         writer.add_hparams(
             hparam_dict={
@@ -495,12 +674,13 @@ def train(
             metric_dict={
                 "metrics/reward_mean": mean_reward,
                 "metrics/frac_success": mean_frac_success,
+                "metrics/win_rate": win_rate,
             },
             global_step=round,
         )
 
         timer.start("advantage")
-        compute_advantage(td, hp.gae_gamma, hp.gae_lambda, value_model)
+        compute_advantage(td, hp.gae_lambda, value_model)
         for k in ["orig_value", "value_target", "unnorm_advantage"]:
             writer.add_scalar(f"rewards/{k}_mean", td[f"{k}s"].mean(), round)
             writer.add_scalar(f"rewards/{k}_std", td[f"{k}s"].std(), round)
@@ -515,10 +695,13 @@ def train(
             hp=hp,
             policy_optim=policy_optim,
             value_optim=value_optim,
+            policy_lr_sched=policy_lr_sched,
+            value_lr_sched=value_lr_sched,
             gc=gc,
             writer=writer,
             log_epoch=(hp.num_rounds <= 5),
             outdir=outdir,
+            aux_info_spec=aux_info_spec,
         )
         timer.finish("training", round)
 
@@ -530,6 +713,9 @@ def train(
                 "value_model": value_model.state_dict(),
                 "policy_optim": policy_optim.state_dict(),
                 "value_optim": value_optim.state_dict(),
+                "policy_lr_sched": policy_lr_sched.state_dict(),
+                "value_lr_sched": value_lr_sched.state_dict(),
+                "gc": gc,
             },
             outdir / "checkpoint.pth",
         )
@@ -551,7 +737,7 @@ def train(
 @click.option(
     "--settings",
     type=SETTINGS_TYPE,
-    default=easy_settings(),
+    default=Settings(**get_preset("easy_p3")),
     help="Settings",
 )
 @click.option("--device", type=torch.device, default=get_device(), help="Device")
@@ -581,6 +767,15 @@ def train(
     type=Path,
     help="Copy contents of a different outdir",
 )
+@click.option(
+    "--win-thresh",
+    type=float,
+    default=None,
+    help="Use win cache to only choose engine seeds above a certain threshold.",
+)
+@click.option(
+    "--win-cache-dir", type=Path, default=CANON_WIN_CACHE_DIR, help="Win cache dir."
+)
 def main(
     outdir: Path,
     hp: Hyperparams,
@@ -591,8 +786,15 @@ def main(
     resume: bool,
     autoindex_runs: bool,
     copy_dir: Path | None,
+    win_thresh: float | None,
+    win_cache_dir: Path,
 ) -> None:
     outdir = outdir.resolve()
+    # nocommit a bit hacky
+    assert autoindex_runs == ("run" not in outdir.name), (
+        "We expect outdir to be named with run_* unless autoindex_runs=True"
+    )
+
     if autoindex_runs:
         max_run_idx = max(
             [
@@ -617,6 +819,9 @@ def main(
     if copy_dir and not outdir.exists():
         logger.info(f"Copying contents from {copy_dir} to {outdir}")
         shutil.copytree(copy_dir, outdir)
+        for bname in ["_running", "_keep"]:
+            if (outdir / bname).exists():
+                (outdir / bname).unlink()
 
     outdir.mkdir(parents=True, exist_ok=True)
     logger.add(outdir / "train.log")
@@ -639,25 +844,55 @@ def main(
         torch.manual_seed(seed)
 
         logger.info("** Creating models, optimizer **")
+        if hp.aux_info_hist_only:
+            set_aux_info_hist_only(True)
+
         models = get_models(hp, settings)
         for m in models.values():
             m.to(device)
         policy_model = cast(PolicyModel, models["policy"])
         value_model = cast(ValueModel, models["value"])
-        policy_optim = create_optim([policy_model], hp.lr, hp.weight_decay)
-        value_optim = create_optim([value_model], hp.lr, hp.weight_decay)
+        policy_optim = create_optim([policy_model], hp.policy_lr, hp.weight_decay)
+        value_optim = create_optim([value_model], hp.value_lr, hp.weight_decay)
+        policy_lr_sched = create_lr_sched(
+            policy_optim, hp.lr_schedule, hp.num_rounds, hp.policy_lr, hp.lr_min_frac
+        )
+        value_lr_sched = create_lr_sched(
+            value_optim, hp.lr_schedule, hp.num_rounds, hp.value_lr, hp.lr_min_frac
+        )
         for obj, key in [
             (policy_model, "policy_model"),
             (value_model, "value_model"),
             (policy_optim, "policy_optim"),
             (value_optim, "value_optim"),
+            (policy_lr_sched, "policy_lr_sched"),
+            (value_lr_sched, "value_lr_sched"),
         ]:
             if key in orig_state_dict:
                 obj.load_state_dict(orig_state_dict[key])
                 del orig_state_dict[key]
+
+        if hp.do_hack:
+            policy_lr_sched = torch.optim.lr_scheduler.ConstantLR(
+                policy_optim,
+                factor=0.2,
+            )
+            policy_lr_sched.step()
+            value_lr_sched = torch.optim.lr_scheduler.ConstantLR(
+                value_optim,
+                factor=0.2,
+            )
+            value_lr_sched.step()
+
         logger.info(
             f"Num Parameters: policy={num_params(policy_model):.2e} value={num_params(value_model):.2e}"
         )
+
+        if win_thresh is not None:
+            win_df = load_cache(settings, win_cache_dir)
+            engine_seeds = list(win_df[win_df["win_rate"] >= win_thresh]["seed"].values)
+        else:
+            engine_seeds = None
 
         torch.save(
             {
@@ -678,11 +913,15 @@ def main(
                 value_model,
                 policy_optim,
                 value_optim,
+                policy_lr_sched,
+                value_lr_sched,
                 settings,
                 hp,
                 writer,
                 outdir,
                 orig_state_dict.get("round", 0),
+                orig_state_dict.get("gc", Counter()),
+                engine_seeds,
             )
     finally:
         (outdir / "_running").unlink()
