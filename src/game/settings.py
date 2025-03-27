@@ -1,5 +1,6 @@
 from __future__ import absolute_import, annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -46,13 +47,13 @@ class Settings:
         assert self.num_side_suits <= TRUMP_SUIT_NUM
 
         assert (
-            self.task_idxs
+            bool(self.task_idxs)
             == (self.min_difficulty is None)
             == (self.max_difficulty is None)
             == (self.max_num_tasks is None)
         )
 
-        if self.bank is not None:
+        if self.min_difficulty is not None:
             assert self.min_difficulty < self.max_difficulty
 
     @property
@@ -123,27 +124,26 @@ class Settings:
 
 def get_preset(preset):
     if preset == "easy_p3":
-        return dict(
+        return Settings(
             num_players=3,
             side_suit_length=4,
             trump_suit_length=2,
             use_signals=False,
             bank="easy",
-            task_idxs=[0, 0, 1],
+            task_idxs=(0, 0, 1),
         )
     elif preset == "easy_p4":
-        return dict(
+        return Settings(
             use_signals=False,
             bank="easy",
-            task_idxs=[0, 0, 1, 1],
-            task_distro="shuffle",
+            task_idxs=(0, 0, 1, 1),
         )
     elif preset == "med":
-        return dict(
+        return Settings(
             use_signals=False,
             bank="med",
-            min_difficulty=4,
-            max_difficulty=7,
+            min_difficulty=1,
+            max_difficulty=3,
             max_num_tasks=4,
         )
     else:
@@ -162,9 +162,8 @@ class SettingsType(click.ParamType):
         for k, v in kwargs.items():
             kwargs[k] = coerce_string(v)
 
-        preset_kwargs = get_preset(kwargs.pop("preset", "easy_p3"))
-        kwargs = preset_kwargs | kwargs
-        return Settings(**kwargs)
+        preset = get_preset(kwargs.pop("preset", "easy_p3"))
+        return dataclasses.replace(preset, **kwargs)
 
 
 SETTINGS_TYPE = SettingsType()

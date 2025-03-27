@@ -126,6 +126,7 @@ class CumTrickCond(Condition):
 
     @override
     def on_trick_end(self, state: State):
+        assert state.trick_winner is not None
         if state.trick_winner == self.player:
             self.num_tricks_won += 1
         else:
@@ -135,7 +136,7 @@ class CumTrickCond(Condition):
                     self.num_other_tricks_won += 1
             elif self.num_tricks == "sumothers":
                 self.num_other_tricks_won += 1
-            elif self.num_tricks == "anyothers":
+            elif self.num_tricks == "anyother":
                 self.num_other_tricks_won_per_player[state.trick_winner] += 1
             else:
                 assert isinstance(self.num_tricks, int)

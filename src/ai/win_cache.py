@@ -61,6 +61,17 @@ def run_one_seed(engine_seed, settings, num_rollouts):
     return {
         "seed": batch_seed,
         "win_rate": float(np.mean([x["win"] for x in rollouts])),
+        "frac_success": float(
+            np.mean(
+                [
+                    sum(y[0] for y in x["num_success_tasks_pp"])
+                    / sum(y[1] for y in x["num_success_tasks_pp"])
+                    for x in rollouts
+                ]
+            )
+        ),
+        "avg_reward": float(np.mean([sum(x["rewards"]) for x in rollouts])),
+        "example": rollouts[0],
     }
 
 
@@ -99,7 +110,7 @@ def run(settings, num_seeds, num_rollouts_per_seed, num_workers):
 @click.option(
     "--settings",
     type=SETTINGS_TYPE,
-    default=Settings(**get_preset("easy_p3")),
+    default=get_preset("easy_p3"),
     help="Settings",
 )
 @click.option(

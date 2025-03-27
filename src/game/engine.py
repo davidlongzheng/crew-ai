@@ -69,6 +69,8 @@ class Engine:
                     and cur_difficulty < difficulty
                 ):
                     task_idx = rng.randint(0, len(task_defs) - 1)
+                    if task_idx in task_idxs:
+                        continue
                     task_diff = task_defs[task_idx][2]
                     if cur_difficulty + task_diff <= difficulty:
                         task_idxs.append(task_idx)

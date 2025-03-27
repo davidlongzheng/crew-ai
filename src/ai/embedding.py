@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..game.settings import Settings
-from ..game.tasks import EASY_TASK_DEFS
+from ..game.tasks import get_task_defs
 from .hyperparams import Hyperparams
 from .utils import MLP
 
@@ -290,7 +290,10 @@ def get_embed_models(
         agg_method=hp.hand_agg_method,
     )
     task_model = PaddedEmbed(
-        len(EASY_TASK_DEFS), hp.embed_dim, hp.embed_dropout, embed_type="embed"
+        len(get_task_defs(settings.bank)),
+        hp.embed_dim,
+        hp.embed_dropout,
+        embed_type="embed",
     )
     tasks_model = TasksModel(
         hp.tasks_embed_dim,
