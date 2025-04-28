@@ -264,7 +264,6 @@ class HandsModel(nn.Module):
 def get_embed_models(
     hp: Hyperparams,
     settings: Settings,
-    network_type: str,
 ) -> dict[str, nn.Module]:
     player_model = PaddedEmbed(
         settings.num_players,
@@ -329,18 +328,6 @@ def get_embed_models(
         ),
     }
 
-    if network_type == "value":
-        ret["hands"] = HandsModel(
-            hp.hands_embed_dim,
-            hand_model,
-            player_model,
-            hidden_dim=hp.hands_hidden_dim,
-            num_hidden_layers=hp.hands_num_hidden_layers,
-            use_layer_norm=hp.hands_use_layer_norm,
-            dropout=hp.hands_dropout,
-            agg_method=hp.hands_agg_method,
-        )
-    else:
-        ret["hand"] = hand_model
+    ret["hand"] = hand_model
 
     return ret

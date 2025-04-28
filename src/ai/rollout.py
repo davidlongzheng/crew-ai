@@ -9,7 +9,7 @@ from ..game.types import Card
 from ..lib.types import StrMap, TaskIdxs
 from .aux_info import AuxInfoTracker
 from .featurizer import featurize
-from .models import PolicyModel
+from .models import PolicyValueModel
 
 
 def do_batch_rollout(
@@ -17,7 +17,7 @@ def do_batch_rollout(
     num_rollouts: int,
     batch_seed: int | None = None,
     engine_seeds: int | list[int] | None = None,
-    policy_model: PolicyModel | None = None,
+    pv_model: PolicyValueModel | None = None,
     device: torch.device | None = None,
     argmax: bool = False,
 ) -> list[StrMap]:
@@ -58,9 +58,9 @@ def do_batch_rollout(
             player_idx = engine.state.get_player_idx(player)
             task_idxs_pr[rollout_idx] += [(task.task_idx, player_idx) for task in tasks]
 
-    if policy_model:
-        policy_model.eval()
-        policy_model.start_single_step()
+    if pv_model:
+        pv_model.eval()
+        pv_model.start_single_step()
 
     def card_to_tuple(x: Card | None):
         if x is None:
@@ -117,7 +117,7 @@ def do_batch_rollout(
         # samples so that the hidden state of the policy model is
         # nice and aligned.
         # The entries are discarded later.
-        if policy_model:
+        if pv_model:
             inps = featurize(
                 [x[-1] for x in public_history_pr_pt],
                 [x[-1] for x in private_inputs_pr_pt],
@@ -128,7 +128,7 @@ def do_batch_rollout(
                 device=device,
             )
             with torch.no_grad():
-                (probs_pr, log_probs_pr), _ = policy_model(inps)
+                (probs_pr, log_probs_pr), _, _ = pv_model(inps)
                 probs_pr = probs_pr.to("cpu").numpy()
                 log_probs_pr = log_probs_pr.to("cpu").numpy()
         else:
@@ -172,8 +172,8 @@ def do_batch_rollout(
             rewards_pr_pt[rollout_idx].append(reward)
             aux_tracker_pr[rollout_idx].on_move(action)
 
-    if policy_model:
-        policy_model.stop_single_step()
+    if pv_model:
+        pv_model.stop_single_step()
 
     ret: list[StrMap] = []
     for rollout_idx, engine in enumerate(engines):

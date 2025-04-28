@@ -129,7 +129,6 @@ class HistoryModel(nn.Module):
 class BackboneModel(nn.Module):
     def __init__(
         self,
-        network_type: str,
         hist_model: HistoryModel,
         hand_embed: HandModel | HandsModel,
         player_embed: nn.Module,
@@ -146,7 +145,6 @@ class BackboneModel(nn.Module):
         use_skip: bool,
     ):
         super().__init__()
-        self.network_type = network_type
         self.hist_model = hist_model
         self.hand_embed = hand_embed
         self.player_embed = player_embed
@@ -192,9 +190,7 @@ class BackboneModel(nn.Module):
             seq_lengths=seq_lengths,
             tasks_embed=(tasks_embed if self.hist_model.use_tasks else None),
         )
-        hand_embed: Tensor = self.hand_embed(
-            private_inps["hands" if self.network_type == "value" else "hand"]
-        )
+        hand_embed: Tensor = self.hand_embed(private_inps["hand"])
         player_embed = self.player_embed(private_inps["player_idx"])
         trick_embed = self.trick_embed(private_inps["trick"])
         turn_embed = self.turn_embed(private_inps["turn"])
@@ -335,16 +331,18 @@ class AuxInfoHead(nn.Module):
         return self.fc(backbone_embed)
 
 
-class PolicyModel(nn.Module):
+class PolicyValueModel(nn.Module):
     def __init__(
         self,
         backbone_model: BackboneModel,
         policy_head: PolicyHead,
+        value_head: ValueHead,
         aux_info_head: AuxInfoHead | None,
     ):
         super().__init__()
         self.backbone_model = backbone_model
         self.policy_head = policy_head
+        self.value_head = value_head
         self.aux_info_head = aux_info_head
 
     def start_single_step(self):
@@ -360,34 +358,15 @@ class PolicyModel(nn.Module):
         aux_info_pred = (
             self.aux_info_head(backbone_embed) if self.aux_info_head else None
         )
-        return self.policy_head(
+        policy_pred = self.policy_head(
             backbone_embed,
             inps["valid_actions"],
             inps["private"]["phase"],
             inps["private"]["trick"],
-        ), aux_info_pred
-
-
-class ValueModel(nn.Module):
-    def __init__(
-        self,
-        backbone_model: BackboneModel,
-        value_head: ValueHead,
-        aux_info_head: AuxInfoHead | None,
-    ):
-        super().__init__()
-        self.backbone_model = backbone_model
-        self.value_head = value_head
-        self.aux_info_head = aux_info_head
-
-    def forward(self, inps):
-        backbone_embed = self.backbone_model(
-            inps["hist"], inps["private"], inps["task_idxs"], inps["seq_lengths"]
         )
-        aux_info_pred = (
-            self.aux_info_head(backbone_embed) if self.aux_info_head else None
-        )
-        return self.value_head(backbone_embed), aux_info_pred
+        value_pred = self.value_head(backbone_embed)
+
+        return policy_pred, value_pred, aux_info_pred
 
 
 def get_models(
@@ -395,73 +374,65 @@ def get_models(
     settings: Settings,
 ) -> dict[str, nn.Module]:
     ret: dict[str, nn.Module] = {}
-    for network_type in ["policy", "value"]:
-        embed_models = get_embed_models(hp, settings, network_type=network_type)
-        hist_model = HistoryModel(
-            embed_models["player"],
-            embed_models["trick"],
-            embed_models["card"],
-            embed_models["turn"],
-            embed_models["phase"],
-            hp.embed_dim,
-            hp.hist_hidden_dim,
-            hp.hist_num_layers,
-            hp.hist_output_dim,
-            hp.hist_dropout,
-            hp.hist_use_layer_norm,
-            hp.hist_use_tasks,
-            hp.tasks_embed_dim,
+    embed_models = get_embed_models(hp, settings)
+    hist_model = HistoryModel(
+        embed_models["player"],
+        embed_models["trick"],
+        embed_models["card"],
+        embed_models["turn"],
+        embed_models["phase"],
+        hp.embed_dim,
+        hp.hist_hidden_dim,
+        hp.hist_num_layers,
+        hp.hist_output_dim,
+        hp.hist_dropout,
+        hp.hist_use_layer_norm,
+        hp.hist_use_tasks,
+        hp.tasks_embed_dim,
+    )
+    backbone_model = BackboneModel(
+        hist_model,
+        cast(HandModel, embed_models["hand"]),
+        embed_models["player"],
+        embed_models["trick"],
+        embed_models["turn"],
+        embed_models["phase"],
+        cast(TasksModel, embed_models["tasks"]),
+        hp.embed_dim,
+        hp.backbone_hidden_dim,
+        hp.backbone_num_hidden_layers,
+        hp.backbone_output_dim,
+        hp.backbone_dropout,
+        hp.backbone_use_layer_norm,
+        hp.backbone_use_skip,
+    )
+    if hp.aux_info_coef:
+        aux_info_head = AuxInfoHead(
+            input_dim=backbone_model.output_dim,
+            spec=get_aux_info_spec(settings),
         )
-        backbone_model = BackboneModel(
-            network_type,
-            hist_model,
-            cast(HandsModel, embed_models["hands"])
-            if network_type == "value"
-            else cast(HandModel, embed_models["hand"]),
-            embed_models["player"],
-            embed_models["trick"],
-            embed_models["turn"],
-            embed_models["phase"],
-            cast(TasksModel, embed_models["tasks"]),
-            hp.embed_dim,
-            hp.backbone_hidden_dim,
-            hp.backbone_num_hidden_layers,
-            hp.backbone_output_dim,
-            hp.backbone_dropout,
-            hp.backbone_use_layer_norm,
-            hp.backbone_use_skip,
-        )
-        if (network_type == "policy" and hp.policy_aux_info_coef) or (
-            network_type == "value" and hp.value_aux_info_coef
-        ):
-            aux_info_head = AuxInfoHead(
-                input_dim=backbone_model.output_dim,
-                spec=get_aux_info_spec(settings),
-            )
-        else:
-            aux_info_head = None
+    else:
+        aux_info_head = None
 
-        if network_type == "policy":
-            policy_head = PolicyHead(
-                backbone_model.output_dim,
-                cast(CardModel, embed_models["card"]),
-                cast(PaddedEmbed, embed_models["phase"]),
-                hp.policy_hidden_dim,
-                hp.policy_num_hidden_layers,
-                hp.policy_dropout,
-                hp.policy_use_layer_norm,
-                hp.policy_query_dim,
-                settings.num_tricks,
-                hp.policy_signal_prior,
-            )
-            ret["policy"] = PolicyModel(
-                backbone_model,
-                policy_head,
-                aux_info_head,
-            )
-        else:
-            value_head = ValueHead(
-                input_dim=backbone_model.output_dim,
-            )
-            ret["value"] = ValueModel(backbone_model, value_head, aux_info_head)
+    policy_head = PolicyHead(
+        backbone_model.output_dim,
+        cast(CardModel, embed_models["card"]),
+        cast(PaddedEmbed, embed_models["phase"]),
+        hp.policy_hidden_dim,
+        hp.policy_num_hidden_layers,
+        hp.policy_dropout,
+        hp.policy_use_layer_norm,
+        hp.policy_query_dim,
+        settings.num_tricks,
+        hp.policy_signal_prior,
+    )
+    value_head = ValueHead(
+        input_dim=backbone_model.output_dim,
+    )
+    ret["pv"] = PolicyValueModel(
+        backbone_model,
+        policy_head,
+        value_head,
+        aux_info_head,
+    )
     return ret
