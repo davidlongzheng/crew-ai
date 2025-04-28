@@ -21,7 +21,7 @@ class Hyperparams:
     num_val_rollouts_per_round: int = 4096
     # Number of trajectories in a batch.
     batch_size: int = 64
-    lr: float = 3e-4
+    lr: float = 1e-3
     lr_schedule: str = "constant"
     lr_min_frac: float = 0.1
     weight_decay: float = (
@@ -51,7 +51,7 @@ class Hyperparams:
     embed_dropout: float = 0.03
     # thermometer encodings for
     # player, trick, rank
-    embed_use_thermo: bool = False
+    embed_use_pos: bool = False
 
     # For embedding a hand from a set of card embeddings
     hand_hidden_dim: int = 32
@@ -70,6 +70,7 @@ class Hyperparams:
     tasks_agg_method: str = "maxpool"
 
     # For public history LSTM
+    hist_use_attn: bool = False
     hist_hidden_dim: int = 32
     hist_output_dim: int = 32
     hist_num_layers: int = 1

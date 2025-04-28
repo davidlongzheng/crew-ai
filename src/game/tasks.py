@@ -854,6 +854,7 @@ TASK_DEFS = [
 EASY_TASK_DEFS = [
     ("#T>=1", "I will win at least one trick.", 1),
     ("#T>=2", "I will win at least two tricks.", 1),
+    ("#T>=3", "I will win at least three tricks.", 2),
 ]
 
 MED_TASK_DEFS = [

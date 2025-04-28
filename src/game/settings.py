@@ -136,7 +136,7 @@ def get_preset(preset):
         return Settings(
             use_signals=False,
             bank="easy",
-            task_idxs=(0, 0, 1, 1),
+            task_idxs=(0, 0, 1, 2),
         )
     elif preset == "med":
         return Settings(

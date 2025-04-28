@@ -10,11 +10,6 @@ from .utils import MLP
 AGG_METHODS = ["maxpool", "sumpool", "avgpool"]
 
 
-def thermometer_encode(x, num_classes):
-    levels = torch.arange(num_classes, device=x.device)
-    return (x.unsqueeze(-1) >= levels).to(torch.float32)
-
-
 def aggregate(x, mask, *, method, dim, check_finite=True):
     assert method in AGG_METHODS, method
 
@@ -43,6 +38,18 @@ def aggregate(x, mask, *, method, dim, check_finite=True):
     return out
 
 
+def get_pos_embed(num_pos, output_dim):
+    pos_idx = torch.arange(num_pos, dtype=torch.float32)
+    assert output_dim % 2 == 0
+    channel_idx = torch.arange(output_dim // 2, dtype=torch.float32)
+    freq = 1.0 / (0.5 * num_pos ** (channel_idx / (output_dim // 2)))
+
+    arg = torch.einsum("p,c->pc", pos_idx, freq)
+    cos = torch.cos(arg)
+    sin = torch.sin(arg)
+    return torch.stack([cos, sin], dim=-1).reshape(num_pos, output_dim)
+
+
 class PaddedEmbed(nn.Module):
     def __init__(
         self,
@@ -58,8 +65,10 @@ class PaddedEmbed(nn.Module):
             self.embed: nn.Module = nn.Embedding(
                 num_embeddings + 1, output_dim, padding_idx=0
             )
-        elif self.embed_type in ["one_hot", "thermo"]:
+        elif self.embed_type in ["one_hot"]:
             self.embed = nn.Linear(num_embeddings + 1, output_dim)
+        elif self.embed_type == "pos":
+            self.register_buffer("embed", get_pos_embed(num_embeddings + 1, output_dim))
         else:
             raise ValueError(self.embed_type)
 
@@ -75,12 +84,8 @@ class PaddedEmbed(nn.Module):
             x = self.embed(
                 F.one_hot((x + 1).long(), num_classes=self.num_embeddings + 1).float()
             )
-        elif self.embed_type == "thermo":
-            x = self.embed(
-                thermometer_encode(
-                    (x + 1).long(), num_classes=self.num_embeddings + 1
-                ).float()
-            )
+        elif self.embed_type == "pos":
+            x = self.embed[(x + 1).to(torch.int32)]
         else:
             raise ValueError(self.embed_type)
 
@@ -97,7 +102,7 @@ class CardModel(nn.Module):
         num_suits: int,
         output_dim: int,
         dropout: float,
-        use_thermo: bool,
+        use_pos: bool,
     ):
         super().__init__()
         self.max_suit_length = max_suit_length
@@ -106,7 +111,7 @@ class CardModel(nn.Module):
             max_suit_length,
             output_dim,
             dropout,
-            embed_type="thermo" if use_thermo else "embed",
+            embed_type="pos" if use_pos else "embed",
         )
         self.suit_embed = PaddedEmbed(
             num_suits, output_dim, dropout, embed_type="embed"
@@ -269,7 +274,7 @@ def get_embed_models(
         settings.num_players,
         hp.embed_dim,
         hp.embed_dropout,
-        embed_type=("thermo" if hp.embed_use_thermo else "embed"),
+        embed_type="embed",
     )
     # +1 to handle nosignal case.
     card_model = CardModel(
@@ -277,7 +282,7 @@ def get_embed_models(
         settings.num_suits + 1,
         hp.embed_dim,
         hp.embed_dropout,
-        hp.embed_use_thermo,
+        hp.embed_use_pos,
     )
     hand_model = HandModel(
         hp.hand_embed_dim,
@@ -310,13 +315,13 @@ def get_embed_models(
             settings.num_tricks,
             hp.embed_dim,
             hp.embed_dropout,
-            embed_type=("thermo" if hp.embed_use_thermo else "embed"),
+            embed_type=("pos" if hp.embed_use_pos else "embed"),
         ),
         "turn": PaddedEmbed(
             settings.num_players,
             hp.embed_dim,
             hp.embed_dropout,
-            embed_type=("thermo" if hp.embed_use_thermo else "embed"),
+            embed_type=("pos" if hp.embed_use_pos else "embed"),
         ),
         "card": card_model,
         "tasks": tasks_model,
