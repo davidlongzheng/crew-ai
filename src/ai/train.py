@@ -35,13 +35,7 @@ def num_params(model):
 
 
 def get_device():
-    return torch.device(
-        "mps"
-        if torch.backends.mps.is_available()
-        else 0
-        if torch.cuda.is_available()
-        else "cpu"
-    )
+    return torch.device(0 if torch.cuda.is_available() else "cpu")
 
 
 def should_keep_outdir(x):
