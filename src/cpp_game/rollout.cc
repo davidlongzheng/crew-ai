@@ -5,87 +5,53 @@
 Rollout::Rollout(const Settings &settings, int engine_seed)
     : settings(settings), engine(std::make_unique<Engine>(settings, engine_seed))
 {
-    public_history_pt.push_back({});
+    // Initialize empty history tensors
+    hist_player_idxs_pt.push_back(torch::full({1}, -1, torch::kInt8));
+    hist_tricks_pt.push_back(torch::full({1}, -1, torch::kInt8));
+    hist_cards_pt.push_back(torch::full({1, 2}, -1, torch::kInt8));
+    hist_turns_pt.push_back(torch::full({1}, -1, torch::kInt8));
+    hist_phases_pt.push_back(torch::full({1}, -1, torch::kInt8));
 
+    // Initialize task indices tensor
+    std::vector<int> task_data_flat;
     for (int player = 0; player < settings.num_players; ++player)
     {
         int player_idx = engine->state.get_player_idx(player);
         for (const auto &task : engine->state.assigned_tasks[player])
         {
-            task_idxs.push_back({task.task_idx, player_idx});
+            task_data_flat.push_back(task.task_idx);
+            task_data_flat.push_back(player_idx);
         }
     }
+    auto task_tensor = torch::tensor(task_data_flat, torch::kInt8);
+    task_idxs_pt.push_back(task_tensor.reshape({-1, 2}));
 }
 
-std::tuple<int, int> Rollout::card_to_tuple(const std::optional<Card> &card) const
+torch::Tensor Rollout::card_to_tensor(const std::optional<Card> &card) const
 {
     if (!card.has_value())
     {
-        return {settings.max_suit_length(), settings.num_suits()};
+        return torch::tensor({settings.max_suit_length(), settings.num_suits()}, torch::kInt8);
     }
-    return {card->rank - 1, settings.get_suit_idx(card->suit)};
+    return torch::tensor({card->rank - 1, settings.get_suit_idx(card->suit)}, torch::kInt8);
 }
 
-std::vector<std::tuple<int, int>> Rollout::encode_hand(const std::vector<Card> &hand) const
+torch::Tensor Rollout::encode_hand(const std::vector<Card> &hand) const
 {
-    std::vector<std::tuple<int, int>> encoded;
+    std::vector<torch::Tensor> encoded_cards;
     for (const auto &card : hand)
     {
-        encoded.push_back(card_to_tuple(card));
+        encoded_cards.push_back(card_to_tensor(card));
     }
-    return encoded;
-}
-
-MoveInput Rollout::get_move_input()
-{
-    // First, collect all valid actions and state info
-    if (engine->state.phase != Phase::kEnd)
+    // Pad with (-1, -1) to max_hand_size + 1
+    while (encoded_cards.size() < settings.max_hand_size() + 1)
     {
-        int player_idx = engine->state.get_player_idx();
-        int turn = engine->state.get_turn();
-
-        std::vector<std::vector<std::tuple<int, int>>> encoded_hands;
-        for (int pidx = 0; pidx < settings.num_players; ++pidx)
-        {
-            encoded_hands.push_back(encode_hand(
-                engine->state.hands[engine->state.get_player(pidx)]));
-        }
-
-        // Record private inputs
-        PrivateInput private_input{
-            .hand = encoded_hands[player_idx],
-            .hands = encoded_hands,
-            .trick = engine->state.trick,
-            .player_idx = player_idx,
-            .turn = turn,
-            .phase = engine->state.phase_idx(),
-        };
-        private_inputs_pt.push_back(private_input);
-
-        // Record valid actions
-        valid_actions = engine->valid_actions();
-        std::vector<std::tuple<int, int>> encoded_actions;
-        for (const auto &action : valid_actions)
-        {
-            encoded_actions.push_back(card_to_tuple(action.card));
-        }
-        valid_actions_pt.push_back(encoded_actions);
-
-        // Record task indices
-        task_idxs_pt.push_back(task_idxs);
+        encoded_cards.push_back(torch::tensor({-1, -1}, torch::kInt8));
     }
-
-    MoveInput move_input{
-        .public_history = public_history_pt.back(),
-        .private_inputs = private_inputs_pt.back(),
-        .valid_actions = valid_actions_pt.back(),
-        .task_idxs = task_idxs_pt.back(),
-    };
-
-    return move_input;
+    return torch::stack(encoded_cards);
 }
 
-void Rollout::move(int action_idx, const std::vector<double> &probs, const std::vector<double> &log_probs)
+void Rollout::move(int action_idx, const torch::Tensor &probs, const torch::Tensor &log_probs)
 {
     if (engine->state.phase == Phase::kEnd)
     {
@@ -96,23 +62,20 @@ void Rollout::move(int action_idx, const std::vector<double> &probs, const std::
     auto action = valid_actions[action_idx];
 
     // Record the action and its probability
-    actions_pt.push_back(action_idx);
+    actions_pt.push_back(torch::tensor({action_idx}, torch::kInt8));
     probs_pt.push_back(probs);
     log_probs_pt.push_back(log_probs);
 
     // Record public history
-    PublicHistory public_history{
-        .trick = engine->state.trick,
-        .card = card_to_tuple(action.card),
-        .player_idx = engine->state.get_player_idx(),
-        .turn = engine->state.get_turn(),
-        .phase = engine->state.phase_idx(),
-    };
-    public_history_pt.push_back(public_history);
+    hist_player_idxs_pt.push_back(torch::tensor({engine->state.get_player_idx()}, torch::kInt8));
+    hist_tricks_pt.push_back(torch::tensor({engine->state.trick}, torch::kInt8));
+    hist_cards_pt.push_back(card_to_tensor(action.card));
+    hist_turns_pt.push_back(torch::tensor({engine->state.get_turn()}, torch::kInt8));
+    hist_phases_pt.push_back(torch::tensor({engine->state.phase_idx()}, torch::kInt8));
 
     // Execute the action and record reward
     double reward = engine->move(action);
-    rewards_pt.push_back(reward);
+    rewards_pt.push_back(torch::tensor({reward}, torch::kFloat32));
 }
 
 BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, const std::vector<int> engine_seeds)
@@ -125,22 +88,105 @@ BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, const s
     }
 }
 
-std::vector<MoveInput> BatchRollout::get_move_inputs()
+MoveInputs BatchRollout::get_move_inputs()
 {
-    std::vector<MoveInput> ret;
+    // Prepare vectors to collect tensors from all rollouts
+    std::vector<torch::Tensor> hist_player_idxs_batch;
+    std::vector<torch::Tensor> hist_tricks_batch;
+    std::vector<torch::Tensor> hist_cards_batch;
+    std::vector<torch::Tensor> hist_turns_batch;
+    std::vector<torch::Tensor> hist_phases_batch;
+
+    std::vector<torch::Tensor> hand_batch;
+    std::vector<torch::Tensor> hands_batch;
+    std::vector<torch::Tensor> player_idx_batch;
+    std::vector<torch::Tensor> trick_batch;
+    std::vector<torch::Tensor> turn_batch;
+    std::vector<torch::Tensor> phase_batch;
+
+    std::vector<torch::Tensor> valid_actions_batch;
+    std::vector<torch::Tensor> task_idxs_batch;
+
+    // Collect tensors from each rollout
     for (auto &rollout : rollouts)
     {
-        ret.push_back(rollout.get_move_input());
+        // Update the rollout's tensors if game is not over
+        if (rollout.engine->state.phase != Phase::kEnd)
+        {
+            int player_idx = rollout.engine->state.get_player_idx();
+            int turn = rollout.engine->state.get_turn();
+
+            // Encode hands for all players
+            std::vector<torch::Tensor> encoded_hands;
+            for (int pidx = 0; pidx < settings.num_players; ++pidx)
+            {
+                encoded_hands.push_back(rollout.encode_hand(
+                    rollout.engine->state.hands[rollout.engine->state.get_player(pidx)]));
+            }
+            torch::Tensor hands_tensor = torch::stack(encoded_hands);
+
+            // Record private inputs
+            rollout.hand_pt.push_back(encoded_hands[player_idx]);
+            rollout.hands_pt.push_back(hands_tensor);
+            rollout.player_idx_pt.push_back(torch::tensor({player_idx}, torch::kInt8));
+            rollout.trick_pt.push_back(torch::tensor({rollout.engine->state.trick}, torch::kInt8));
+            rollout.turn_pt.push_back(torch::tensor({turn}, torch::kInt8));
+            rollout.phase_pt.push_back(torch::tensor({rollout.engine->state.phase_idx()}, torch::kInt8));
+
+            // Record valid actions
+            rollout.valid_actions = rollout.engine->valid_actions();
+            std::vector<torch::Tensor> encoded_actions;
+            for (const auto &action : rollout.valid_actions)
+            {
+                encoded_actions.push_back(rollout.card_to_tensor(action.card));
+            }
+            rollout.valid_actions_pt.push_back(torch::stack(encoded_actions));
+        }
+
+        // Add the latest tensors to our batch
+        hist_player_idxs_batch.push_back(rollout.hist_player_idxs_pt.back());
+        hist_tricks_batch.push_back(rollout.hist_tricks_pt.back());
+        hist_cards_batch.push_back(rollout.hist_cards_pt.back());
+        hist_turns_batch.push_back(rollout.hist_turns_pt.back());
+        hist_phases_batch.push_back(rollout.hist_phases_pt.back());
+
+        hand_batch.push_back(rollout.hand_pt.back());
+        hands_batch.push_back(rollout.hands_pt.back());
+        player_idx_batch.push_back(rollout.player_idx_pt.back());
+        trick_batch.push_back(rollout.trick_pt.back());
+        turn_batch.push_back(rollout.turn_pt.back());
+        phase_batch.push_back(rollout.phase_pt.back());
+
+        valid_actions_batch.push_back(rollout.valid_actions_pt.back());
+        task_idxs_batch.push_back(rollout.task_idxs_pt.back());
     }
-    return ret;
+
+    // Stack all tensors into batch tensors
+    return MoveInputs{
+        .hist_player_idxs = torch::stack(hist_player_idxs_batch),
+        .hist_tricks = torch::stack(hist_tricks_batch),
+        .hist_cards = torch::stack(hist_cards_batch),
+        .hist_turns = torch::stack(hist_turns_batch),
+        .hist_phases = torch::stack(hist_phases_batch),
+
+        .hand = torch::stack(hand_batch),
+        .hands = torch::stack(hands_batch),
+        .player_idx = torch::stack(player_idx_batch),
+        .trick = torch::stack(trick_batch),
+        .turn = torch::stack(turn_batch),
+        .phase = torch::stack(phase_batch),
+
+        .valid_actions = torch::stack(valid_actions_batch),
+        .task_idxs = torch::stack(task_idxs_batch),
+    };
 }
 
-void BatchRollout::move(const std::vector<int> &action_indices, const std::vector<std::vector<double>> &probs, const std::vector<std::vector<double>> &log_probs)
+void BatchRollout::move(const torch::Tensor &action_indices, const torch::Tensor &probs, const torch::Tensor &log_probs)
 {
-    assert((int)action_indices.size() == num_rollouts);
+    assert(action_indices.size(0) == num_rollouts);
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
-        rollouts[rollout_idx].move(action_indices[rollout_idx], probs[rollout_idx], log_probs[rollout_idx]);
+        rollouts[rollout_idx].move(action_indices[rollout_idx].item<int>(), probs[rollout_idx], log_probs[rollout_idx]);
     }
 }
 
@@ -151,36 +197,64 @@ bool BatchRollout::is_done() const
                        { return rollout.engine->state.phase == Phase::kEnd; });
 }
 
-std::vector<RolloutResult> BatchRollout::get_results() const
+RolloutResults BatchRollout::get_results() const
 {
-    std::vector<RolloutResult> ret;
+    // Prepare batch tensors for each property
+    std::vector<torch::Tensor> hist_player_idxs_batch;
+    std::vector<torch::Tensor> hist_tricks_batch;
+    std::vector<torch::Tensor> hist_cards_batch;
+    std::vector<torch::Tensor> hist_turns_batch;
+    std::vector<torch::Tensor> hist_phases_batch;
+
+    std::vector<torch::Tensor> hand_batch;
+    std::vector<torch::Tensor> hands_batch;
+    std::vector<torch::Tensor> player_idx_batch;
+    std::vector<torch::Tensor> trick_batch;
+    std::vector<torch::Tensor> turn_batch;
+    std::vector<torch::Tensor> phase_batch;
+
+    std::vector<torch::Tensor> valid_actions_batch;
+    std::vector<torch::Tensor> task_idxs_batch;
+
+    std::vector<torch::Tensor> probs_batch;
+    std::vector<torch::Tensor> log_probs_batch;
+    std::vector<torch::Tensor> actions_batch;
+    std::vector<torch::Tensor> rewards_batch;
+
+    std::vector<torch::Tensor> num_success_tasks_pp_batch;
+    std::vector<int> win_batch;
+
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
         const auto &rollout = rollouts[rollout_idx];
-        auto public_history_pt = rollout.public_history_pt;
-        auto &valid_actions_pt = rollout.valid_actions_pt;
-        auto &private_inputs_pt = rollout.private_inputs_pt;
-        auto &actions_pt = rollout.actions_pt;
-        auto &task_idxs_pt = rollout.task_idxs_pt;
-        auto &rewards_pt = rollout.rewards_pt;
-        auto &probs_pt = rollout.probs_pt;
-        auto &log_probs_pt = rollout.log_probs_pt;
 
-        // Remove the last dummy entry
-        public_history_pt.pop_back();
+        // Pad sequences as necessary for history tensors
+        hist_player_idxs_batch.push_back(torch::stack(rollout.hist_player_idxs_pt));
+        hist_tricks_batch.push_back(torch::stack(rollout.hist_tricks_pt));
+        hist_cards_batch.push_back(torch::stack(rollout.hist_cards_pt));
+        hist_turns_batch.push_back(torch::stack(rollout.hist_turns_pt));
+        hist_phases_batch.push_back(torch::stack(rollout.hist_phases_pt));
 
-        // Verify all lengths match
-        assert(valid_actions_pt.size() == public_history_pt.size() &&
-               private_inputs_pt.size() == public_history_pt.size() &&
-               actions_pt.size() == public_history_pt.size() &&
-               probs_pt.size() == public_history_pt.size() &&
-               log_probs_pt.size() == public_history_pt.size() &&
-               task_idxs_pt.size() == public_history_pt.size() &&
-               rewards_pt.size() == public_history_pt.size());
+        hand_batch.push_back(torch::stack(rollout.hand_pt));
+        hands_batch.push_back(torch::stack(rollout.hands_pt));
+        player_idx_batch.push_back(torch::stack(rollout.player_idx_pt));
+        trick_batch.push_back(torch::stack(rollout.trick_pt));
+        turn_batch.push_back(torch::stack(rollout.turn_pt));
+        phase_batch.push_back(torch::stack(rollout.phase_pt));
+
+        valid_actions_batch.push_back(torch::stack(rollout.valid_actions_pt));
+        task_idxs_batch.push_back(torch::stack(rollout.task_idxs_pt));
+
+        probs_batch.push_back(torch::stack(rollout.probs_pt));
+        log_probs_batch.push_back(torch::stack(rollout.log_probs_pt));
+        actions_batch.push_back(torch::stack(rollout.actions_pt));
+        rewards_batch.push_back(torch::stack(rollout.rewards_pt));
 
         // Calculate success metrics
         bool win = rollout.engine->state.status == Status::kSuccess;
-        std::vector<std::tuple<int, int>> num_success_tasks_pp;
+        win_batch.push_back(win);
+
+        std::vector<torch::Tensor> num_success_tasks;
         for (int player_idx = 0; player_idx < settings.num_players; ++player_idx)
         {
             int player = rollout.engine->state.get_player(player_idx);
@@ -190,22 +264,34 @@ std::vector<RolloutResult> BatchRollout::get_results() const
                 [](const auto &task)
                 { return task.status == Status::kSuccess; });
             int num_tasks = rollout.engine->state.assigned_tasks[player].size();
-            num_success_tasks_pp.push_back({num_success, num_tasks});
+            num_success_tasks.push_back(torch::tensor({num_success, num_tasks}, torch::kInt8));
         }
-
-        RolloutResult rollout_result{
-            .public_history = public_history_pt,
-            .private_inputs = private_inputs_pt,
-            .valid_actions = valid_actions_pt,
-            .probs = probs_pt,
-            .log_probs = log_probs_pt,
-            .actions = actions_pt,
-            .rewards = rewards_pt,
-            .num_success_tasks_pp = num_success_tasks_pp,
-            .task_idxs = task_idxs_pt,
-            .win = win,
-        };
-        ret.push_back(rollout_result);
+        num_success_tasks_pp_batch.push_back(torch::stack(num_success_tasks));
     }
-    return ret;
+
+    // Stack all tensors into batch tensors
+    return RolloutResults{
+        .hist_player_idxs = torch::stack(hist_player_idxs_batch),
+        .hist_tricks = torch::stack(hist_tricks_batch),
+        .hist_cards = torch::stack(hist_cards_batch),
+        .hist_turns = torch::stack(hist_turns_batch),
+        .hist_phases = torch::stack(hist_phases_batch),
+
+        .hand = torch::stack(hand_batch),
+        .hands = torch::stack(hands_batch),
+        .player_idx = torch::stack(player_idx_batch),
+        .trick = torch::stack(trick_batch),
+        .turn = torch::stack(turn_batch),
+        .phase = torch::stack(phase_batch),
+
+        .valid_actions = torch::stack(valid_actions_batch),
+        .task_idxs = torch::stack(task_idxs_batch),
+
+        .probs = torch::stack(probs_batch),
+        .log_probs = torch::stack(log_probs_batch),
+        .actions = torch::stack(actions_batch),
+        .rewards = torch::stack(rewards_batch),
+
+        .num_success_tasks_pp = torch::stack(num_success_tasks_pp_batch),
+        .win = torch::tensor(win_batch, torch::kInt8)};
 }

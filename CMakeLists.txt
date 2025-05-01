@@ -41,20 +41,20 @@ add_library(game
 # Add include directories
 target_include_directories(game PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp_game
+    ${TORCH_INCLUDE_DIRS}
 )
 
 # Set compiler flags
-if(MSVC)
-    target_compile_options(game PRIVATE /W4)
-else()
-    target_compile_options(game PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+target_compile_options(game PRIVATE -Wall -Wextra -Wpedantic -w)
 
 # Add the Python bindings
 pybind11_add_module(cpp_game src/cpp_game/bindings.cc)
-target_link_libraries(cpp_game PRIVATE game)
+target_link_libraries(cpp_game PRIVATE game ${TORCH_LIBRARIES})
 
-target_link_libraries(cpp_game PRIVATE ${TORCH_LIBRARIES})
+add_executable(torchtest src/cpp_game/torchtest.cc)
+target_include_directories(torchtest PRIVATE ${TORCH_INCLUDE_DIRS})
+target_link_libraries(torchtest "${TORCH_LIBRARIES}")
+
 
 # Install rules
 install(TARGETS game

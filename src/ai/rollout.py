@@ -2,6 +2,9 @@ import random
 
 import numpy as np
 import torch
+from tensordict import TensorDict
+
+import cpp_game
 
 from ..game.engine import Engine
 from ..game.settings import Settings
@@ -220,5 +223,126 @@ def do_batch_rollout(
                 "win": win,
             }
         )
+
+    return ret
+
+
+def do_batch_rollout_cpp(
+    settings: cpp_game.Settings,
+    num_rollouts: int,
+    batch_seed: int | None = None,
+    engine_seeds: int | list[int] | None = None,
+    pv_model: PolicyValueModel | None = None,
+    device: torch.device | None = None,
+    argmax: bool = False,
+) -> list[StrMap]:
+    """Does a roll out of one game and returns all the necessary
+    inputs/actions/rewards to do training.
+    """
+    if engine_seeds is None:
+        engine_seed_rng = random.Random(batch_seed)
+        engine_seeds = [
+            engine_seed_rng.randint(0, 100_000_000) for _ in range(num_rollouts)
+        ]
+    elif isinstance(engine_seeds, list):
+        engine_seed_rng = random.Random(batch_seed)
+        engine_seeds = engine_seed_rng.sample(engine_seeds, num_rollouts)
+    else:
+        assert isinstance(engine_seeds, int)
+        engine_seeds = [engine_seeds for _ in range(num_rollouts)]
+
+    batch_rollout = cpp_game.BatchRollout(settings, num_rollouts, engine_seeds)
+    # policy_rng = np.random.default_rng(batch_seed)
+
+    if pv_model:
+        pv_model.eval()
+        pv_model.start_single_step()
+
+    while not batch_rollout.is_done():
+        move_inps = batch_rollout.get_move_inputs()
+
+        # Purposefully create dummy entries for finished
+        # samples so that the hidden state of the policy model is
+        # nice and aligned.
+        # The entries are discarded later.
+        if pv_model:
+            inps = TensorDict(
+                hist=TensorDict(
+                    player_idxs=move_inps.hist_player_idxs,
+                    tricks=move_inps.hist_tricks,
+                    cards=move_inps.hist_cards,
+                    turns=move_inps.hist_turns,
+                    phases=move_inps.hist_phases,
+                ),
+                private=TensorDict(
+                    hand=move_inps.hand,
+                    hands=move_inps.hands,
+                    player_idx=move_inps.player_idx,
+                    trick=move_inps.trick,
+                    turn=move_inps.turn,
+                    phase=move_inps.phase,
+                ),
+                valid_actions=move_inps.valid_actions,
+                task_idxs=move_inps.task_idxs,
+                seq_lengths=None,
+            )
+            inps = inps.to(device)
+            with torch.no_grad():
+                (probs_pr, log_probs_pr), _, _ = pv_model(inps)
+                probs_pr = probs_pr.to("cpu")
+                log_probs_pr = log_probs_pr.to("cpu")
+        else:
+            # Count valid actions (non-negative values) in each row of valid_actions tensor
+            valid_actions = move_inps.valid_actions.to("cpu")
+            num_valid = torch.sum(valid_actions[:, :, 0] >= 0, dim=1)
+            probs_pr = (valid_actions[:, :, 0] >= 0).to(
+                torch.float
+            ) / num_valid.unsqueeze(1)
+            log_probs_pr = torch.log(probs_pr)
+
+        probs_pr /= probs_pr.sum(dim=1).unsqueeze(1)
+        if argmax:
+            action_idxs = torch.argmax(probs_pr, dim=1)
+        else:
+            # Create a categorical distribution and sample from it
+            m = torch.distributions.Categorical(probs=probs_pr)
+            action_idxs = m.sample()
+
+        batch_rollout.move(action_idxs, probs_pr, log_probs_pr)
+
+    if pv_model:
+        pv_model.stop_single_step()
+
+    results = batch_rollout.get_results()
+    ret = TensorDict(
+        inps=TensorDict(
+            hist=TensorDict(
+                player_idxs=results.hist_player_idxs,
+                tricks=results.hist_tricks,
+                cards=results.hist_cards,
+                turns=results.hist_turns,
+                phases=results.hist_phases,
+            ),
+            private=TensorDict(
+                hand=results.hand,
+                hands=results.hands,
+                player_idx=results.player_idx,
+                trick=results.trick,
+                turn=results.turn,
+                phase=results.phase,
+            ),
+            valid_actions=results.valid_actions,
+            task_idxs=results.task_idxs,
+            # problematic
+            seq_lengths=None,
+        ),
+        orig_probs=results.probs,
+        orig_log_probs=results.log_probs,
+        actions=results.actions,
+        rewards=results.rewards,
+        num_success_tasks_pp=results.num_success_tasks_pp,
+        win=results.win,
+    )
+    ret = ret.to(device)
 
     return ret

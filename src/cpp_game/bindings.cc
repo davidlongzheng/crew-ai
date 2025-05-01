@@ -275,52 +275,52 @@ PYBIND11_MODULE(cpp_game, m)
         .value("highest", SignalValue::kHighest)
         .value("lowest", SignalValue::kLowest);
 
-    // Bind PublicHistory struct
-    py::class_<PublicHistory>(m, "PublicHistory")
+    // Bind MoveInputs struct
+    py::class_<MoveInputs>(m, "MoveInputs")
         .def(py::init<>())
-        .def_readwrite("trick", &PublicHistory::trick)
-        .def_readwrite("card", &PublicHistory::card)
-        .def_readwrite("player_idx", &PublicHistory::player_idx)
-        .def_readwrite("turn", &PublicHistory::turn)
-        .def_readwrite("phase", &PublicHistory::phase);
+        .def_readwrite("hist_player_idxs", &MoveInputs::hist_player_idxs)
+        .def_readwrite("hist_tricks", &MoveInputs::hist_tricks)
+        .def_readwrite("hist_cards", &MoveInputs::hist_cards)
+        .def_readwrite("hist_turns", &MoveInputs::hist_turns)
+        .def_readwrite("hist_phases", &MoveInputs::hist_phases)
+        .def_readwrite("hand", &MoveInputs::hand)
+        .def_readwrite("hands", &MoveInputs::hands)
+        .def_readwrite("player_idx", &MoveInputs::player_idx)
+        .def_readwrite("trick", &MoveInputs::trick)
+        .def_readwrite("turn", &MoveInputs::turn)
+        .def_readwrite("phase", &MoveInputs::phase)
+        .def_readwrite("valid_actions", &MoveInputs::valid_actions)
+        .def_readwrite("task_idxs", &MoveInputs::task_idxs);
 
-    py::class_<PrivateInput>(m, "PrivateInput")
+    // Bind RolloutResults struct
+    py::class_<RolloutResults>(m, "RolloutResults")
         .def(py::init<>())
-        .def_readwrite("hand", &PrivateInput::hand)
-        .def_readwrite("hands", &PrivateInput::hands)
-        .def_readwrite("trick", &PrivateInput::trick)
-        .def_readwrite("player_idx", &PrivateInput::player_idx)
-        .def_readwrite("turn", &PrivateInput::turn)
-        .def_readwrite("phase", &PrivateInput::phase);
-
-    // Bind MoveInput struct
-    py::class_<MoveInput>(m, "MoveInput")
-        .def(py::init<>())
-        .def_readwrite("public_history", &MoveInput::public_history)
-        .def_readwrite("private_inputs", &MoveInput::private_inputs)
-        .def_readwrite("valid_actions", &MoveInput::valid_actions)
-        .def_readwrite("task_idxs", &MoveInput::task_idxs);
-
-    // Bind RolloutResult struct
-    py::class_<RolloutResult>(m, "RolloutResult")
-        .def(py::init<>())
-        .def_readwrite("public_history", &RolloutResult::public_history)
-        .def_readwrite("private_inputs", &RolloutResult::private_inputs)
-        .def_readwrite("valid_actions", &RolloutResult::valid_actions)
-        .def_readwrite("probs", &RolloutResult::probs)
-        .def_readwrite("log_probs", &RolloutResult::log_probs)
-        .def_readwrite("actions", &RolloutResult::actions)
-        .def_readwrite("rewards", &RolloutResult::rewards)
-        .def_readwrite("num_success_tasks_pp", &RolloutResult::num_success_tasks_pp)
-        .def_readwrite("task_idxs", &RolloutResult::task_idxs)
-        .def_readwrite("win", &RolloutResult::win);
+        .def_readwrite("hist_player_idxs", &RolloutResults::hist_player_idxs)
+        .def_readwrite("hist_tricks", &RolloutResults::hist_tricks)
+        .def_readwrite("hist_cards", &RolloutResults::hist_cards)
+        .def_readwrite("hist_turns", &RolloutResults::hist_turns)
+        .def_readwrite("hist_phases", &RolloutResults::hist_phases)
+        .def_readwrite("hand", &RolloutResults::hand)
+        .def_readwrite("hands", &RolloutResults::hands)
+        .def_readwrite("player_idx", &RolloutResults::player_idx)
+        .def_readwrite("trick", &RolloutResults::trick)
+        .def_readwrite("turn", &RolloutResults::turn)
+        .def_readwrite("phase", &RolloutResults::phase)
+        .def_readwrite("valid_actions", &RolloutResults::valid_actions)
+        .def_readwrite("task_idxs", &RolloutResults::task_idxs)
+        .def_readwrite("probs", &RolloutResults::probs)
+        .def_readwrite("log_probs", &RolloutResults::log_probs)
+        .def_readwrite("actions", &RolloutResults::actions)
+        .def_readwrite("rewards", &RolloutResults::rewards)
+        .def_readwrite("num_success_tasks_pp", &RolloutResults::num_success_tasks_pp)
+        .def_readwrite("win", &RolloutResults::win);
 
     // Bind Rollout class
     py::class_<Rollout>(m, "Rollout")
         .def(py::init<const Settings &, int>(),
              py::arg("settings"), py::arg("engine_seed"))
-        .def("get_move_input", &Rollout::get_move_input)
-        .def("move", &Rollout::move);
+        .def("move", &Rollout::move,
+             py::arg("action_idx"), py::arg("probs"), py::arg("log_probs"));
 
     // Bind BatchRollout class
     py::class_<BatchRollout>(m, "BatchRollout")
@@ -328,7 +328,8 @@ PYBIND11_MODULE(cpp_game, m)
              py::arg("settings"), py::arg("num_rollouts"),
              py::arg("engine_seeds"))
         .def("get_move_inputs", &BatchRollout::get_move_inputs)
-        .def("move", &BatchRollout::move)
+        .def("move", &BatchRollout::move,
+             py::arg("action_indices"), py::arg("probs"), py::arg("log_probs"))
         .def("is_done", &BatchRollout::is_done)
         .def("get_results", &BatchRollout::get_results);
 
