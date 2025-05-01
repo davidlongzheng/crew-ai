@@ -8,14 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(Python_EXECUTABLE "/Users/davidzheng/projects/crew-ai/crew-ai/venv/bin/python")
-set(Torch_DIR "/Users/davidzheng/projects/crew-ai/crew-ai/cpp_lib/libtorch/share/cmake/Torch")
 
 # Find Python and pybind11
 find_package(Python 3.12 COMPONENTS Interpreter Development REQUIRED)
 
 find_package(pybind11 CONFIG REQUIRED)
-
-find_package(Torch REQUIRED)
 
 # Add source files
 set(SOURCES
