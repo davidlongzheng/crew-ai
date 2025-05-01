@@ -665,7 +665,7 @@ def train(
 @click.option(
     "--settings",
     type=SETTINGS_TYPE,
-    default=get_preset("easy_p3"),
+    default=get_preset("easy_p4"),
     help="Settings",
 )
 @click.option("--device", type=torch.device, default=get_device(), help="Device")

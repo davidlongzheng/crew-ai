@@ -3,6 +3,8 @@ import random
 import numpy as np
 import torch
 
+import cpp_game
+
 from ..game.engine import Engine
 from ..game.settings import Settings
 from ..game.types import Card
@@ -228,5 +230,111 @@ def do_batch_rollout(
                 "win": win,
             }
         )
+
+    return ret
+
+
+def do_batch_rollout_cpp(
+    settings: cpp_game.Settings,
+    num_rollouts: int,
+    batch_seed: int | None = None,
+    engine_seeds: int | list[int] | None = None,
+    pv_model: PolicyValueModel | None = None,
+    device: torch.device | None = None,
+    argmax: bool = False,
+) -> list[StrMap]:
+    """Does a roll out of one game and returns all the necessary
+    inputs/actions/rewards to do training.
+    """
+    if engine_seeds is None:
+        engine_seed_rng = random.Random(batch_seed)
+        engine_seeds = [
+            engine_seed_rng.randint(0, 100_000_000) for _ in range(num_rollouts)
+        ]
+    elif isinstance(engine_seeds, list):
+        engine_seed_rng = random.Random(batch_seed)
+        engine_seeds = engine_seed_rng.sample(engine_seeds, num_rollouts)
+    else:
+        assert isinstance(engine_seeds, int)
+        engine_seeds = [engine_seeds for _ in range(num_rollouts)]
+
+    batch_rollout = cpp_game.BatchRollout(settings, num_rollouts, engine_seeds)
+    policy_rng = np.random.default_rng(batch_seed)
+
+    if pv_model:
+        pv_model.eval()
+        pv_model.start_single_step()
+
+    while not batch_rollout.is_done():
+        move_inps = batch_rollout.get_move_inputs()
+
+        # Purposefully create dummy entries for finished
+        # samples so that the hidden state of the policy model is
+        # nice and aligned.
+        # The entries are discarded later.
+        if pv_model:
+            inps = featurize(
+                [x.public_history for x in move_inps],
+                [x.private_inputs for x in move_inps],
+                [x.valid_actions for x in move_inps],
+                [x.task_idxs for x in move_inps],
+                settings,
+                non_feature_dims=1,
+                device=device,
+            )
+            with torch.no_grad():
+                (probs_pr, log_probs_pr), _, _ = pv_model(inps)
+                probs_pr = probs_pr.to("cpu").numpy()
+                log_probs_pr = log_probs_pr.to("cpu").numpy()
+        else:
+            probs_pr = [
+                np.full(len(x.valid_actions), 1.0 / len(x.valid_actions))
+                for x in move_inps
+            ]
+            log_probs_pr = [np.log(x) for x in probs_pr]
+
+        probs_pr = [x / np.sum(x) for x in probs_pr]
+        if argmax:
+            action_idxs = [int(np.argmax(x)) for x in probs_pr]
+        else:
+            action_idxs = [
+                int(policy_rng.choice(np.arange(len(x)), size=1, p=x)[0])
+                for x in probs_pr
+            ]
+
+        batch_rollout.move(action_idxs, probs_pr, log_probs_pr)
+
+    if pv_model:
+        pv_model.stop_single_step()
+
+    ret = [
+        {
+            "public_history": [
+                {
+                    k: getattr(x, k)
+                    for k in ["trick", "card", "player_idx", "turn", "phase"]
+                }
+                if x.trick != -1
+                else {}
+                for x in result.public_history
+            ],
+            "private_inputs": [
+                {
+                    k: getattr(x, k)
+                    for k in ["hand", "hands", "trick", "player_idx", "turn", "phase"]
+                }
+                for x in result.private_inputs
+            ],
+            "valid_actions": result.valid_actions,
+            "probs": result.probs,
+            "log_probs": result.log_probs,
+            "actions": result.actions,
+            "rewards": result.rewards,
+            "num_success_tasks_pp": result.num_success_tasks_pp,
+            "task_idxs": result.task_idxs,
+            "win": result.win,
+        }
+        for result in batch_rollout.get_results()
+    ]
 
     return ret

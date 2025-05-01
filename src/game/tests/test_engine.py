@@ -4,6 +4,8 @@ import random
 
 import pytest
 
+import cpp_game
+
 from ..engine import Engine
 from ..settings import Settings
 from ..types import Action, Card
@@ -18,6 +20,7 @@ def test_engine_initialization() -> None:
             trump_suit_length=3,
             use_trump_suit=True,
             use_signals=False,
+            task_idxs=(0,),
         ),
         seed=42,
     )
@@ -28,7 +31,7 @@ def test_engine_initialization() -> None:
     assert len(engine.state.actions) == 0
     assert engine.state.trick == 0
     assert 0 <= engine.state.leader < 3
-    assert engine.state.player_turn == engine.state.leader
+    assert engine.state.cur_player == engine.state.leader
 
 
 def test_hand_generation() -> None:
@@ -40,11 +43,13 @@ def test_hand_generation() -> None:
             trump_suit_length=2,
             use_trump_suit=True,
             use_signals=False,
+            task_idxs=(0,),
         ),
         seed=42,
     )
 
-    hands = engine.gen_hands()
+    rng = cpp_game.Rng()
+    hands = engine.gen_hands(rng)
 
     # Check basic hand properties
     assert len(hands) == 4
@@ -67,6 +72,7 @@ def test_valid_actions() -> None:
             trump_suit_length=1,
             use_trump_suit=True,
             use_signals=False,
+            task_idxs=(0,),
         ),
         seed=42,
     )
@@ -75,7 +81,7 @@ def test_valid_actions() -> None:
     actions = engine.valid_actions()
     assert isinstance(actions, list)
     assert all(isinstance(action, Action) for action in actions)
-    assert all(action.player == engine.state.player_turn for action in actions)
+    assert all(action.player == engine.state.cur_player for action in actions)
     assert all(action.type == "play" for action in actions)
 
 
@@ -88,11 +94,12 @@ def test_play_card() -> None:
             trump_suit_length=1,
             use_trump_suit=True,
             use_signals=False,
+            task_idxs=(0,),
         ),
         seed=42,
     )
 
-    initial_player = engine.state.player_turn
+    initial_player = engine.state.cur_player
     valid_actions = engine.valid_actions()
     assert len(valid_actions) > 0
 
@@ -115,6 +122,7 @@ def test_follow_suit() -> None:
             trump_suit_length=1,
             use_trump_suit=True,
             use_signals=False,
+            task_idxs=(0,),
         ),
         seed=42,
     )
@@ -125,7 +133,7 @@ def test_follow_suit() -> None:
         [Card(rank=2, suit=0), Card(rank=1, suit=1)],
     ]
     engine.state.leader = 0
-    engine.state.player_turn = 0
+    engine.state.cur_player = 0
 
     # Play first card (suit 0)
     first_action = Action(player=0, type="play", card=engine.state.hands[0][0])
@@ -141,7 +149,10 @@ def test_follow_suit() -> None:
 @pytest.mark.parametrize("use_signals", [True, False])
 def test_full_hand(use_signals: bool) -> None:
     engine = Engine(
-        settings=Settings(use_signals=use_signals),
+        settings=Settings(
+            use_signals=use_signals,
+            task_idxs=(0,),
+        ),
         seed=42,
     )
     rng = random.Random(42)
@@ -169,7 +180,7 @@ def test_full_hand(use_signals: bool) -> None:
         assert engine.state.phase == "play"
         for turn_idx in range(engine.settings.num_players):
             assert (
-                engine.state.player_turn
+                engine.state.cur_player
                 == (engine.state.leader + turn_idx) % engine.settings.num_players
             )
             valid_actions = engine.valid_actions()

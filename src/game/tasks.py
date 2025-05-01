@@ -60,7 +60,8 @@ class TrickCond(Condition):
 
     @override
     def on_end(self):
-        assert self.status != "unresolved"
+        if self.status == "unresolved":
+            self.status = "fail"
 
 
 @dataclass
@@ -216,7 +217,7 @@ class CumCardCond(Condition):
                 self.status = "success"
             elif self.direction in ["<", "<="] and not comp_ok:
                 self.status = "fail"
-            elif self.direction == "=" and self.num_cards > num_other_cards:
+            elif self.direction == "=" and self.num_cards_won > num_other_cards:
                 self.status = "fail"
 
         if self.direction in [">=", ">"]:
@@ -329,7 +330,10 @@ class ConsecCond(Condition):
             return
 
         if state.trick_winner == self.player:
-            if self.cur_consec_end and state.trick == self.cur_consec_end + 1:
+            if (
+                self.cur_consec_end is not None
+                and state.trick == self.cur_consec_end + 1
+            ):
                 self.cur_consec_end += 1
             else:
                 self.cur_consec_start = state.trick
@@ -518,6 +522,8 @@ def parse_token(token: str, settings: Settings, player: int) -> Condition:
                 settings=settings,
                 player=player,
             )
+        else:
+            raise NotImplementedError("unhandled", orig_token)
     elif token.startswith("#sweep"):
         token = token.removeprefix("#sweep>=")
         return SweepCond(num_sweeps=int(token), settings=settings, player=player)
@@ -759,11 +765,11 @@ TASK_DEFS = [
     ("1T #5>=1 with(7)", "I will win a 5 with a 7.", 2),
     ("1T 9g with(t)", "I will the 9g with a submarine.", 3),
     ("T0 T-1", "I will win the frist and the last trick.", 4),
-    (
-        "#T<#T(capt)",
-        "I will win fewer tricks than the captain. I am not the captain",
-        2,
-    ),
+    # (
+    #     "#T<#T(capt)",
+    #     "I will win fewer tricks than the captain. I am not the captain",
+    #     2,
+    # ),
     ("T0 T1 T2", "I will win the first 3 tricks.", 3),
     ("6g", "I will win 6g", 1),
     ("#7>=2", "I will win at least 2 7's.", 2),
@@ -773,11 +779,11 @@ TASK_DEFS = [
     ("#sweep>=1", "I will win all the cards in at least one of the 4 colors.", 4),
     ("#T>#T(sumothers)", "I will more tricks than everyone else combined.", 4),
     ("#t=0", "I will win no submarines.", 1),
-    (
-        "#T=#T(capt)",
-        "I will win as many tricks as the captain. I am not the captain.",
-        3,
-    ),
+    # (
+    #     "#T=#T(capt)",
+    #     "I will win as many tricks as the captain. I am not the captain.",
+    #     3,
+    # ),
     ("8p 5b", "I will win 8p and 5b.", 2),
     ("#p>=5", "I will at least 5 pinks.", 3),
     ("#t=2", "I will win exactly 2 submarines.", 3),
@@ -797,11 +803,11 @@ TASK_DEFS = [
     ("#p=1", "I will win exactly 1 pink.", 3),
     ("#5=0", "I will no 5", 2),
     ("3t", "I will win 3t.", 1),
-    (
-        "#T>#T(capt)",
-        "I will win more tricks than the captain. I am not the captain.",
-        2,
-    ),
+    # (
+    #     "#T>#T(capt)",
+    #     "I will win more tricks than the captain. I am not the captain.",
+    #     2,
+    # ),
     ("T0", "I will win the first trick.", 1),
     ("1y", "I will win 1y.", 1),
     ("#T>#T(anyother)", "I will win more tricks than anyone else.", 3),
@@ -888,3 +894,5 @@ def get_task_defs(bank):
         return EASY_TASK_DEFS
     elif bank == "med":
         return MED_TASK_DEFS
+    else:
+        raise ValueError(f"Invalid bank: {bank}")

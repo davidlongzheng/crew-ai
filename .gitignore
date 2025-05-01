@@ -4,3 +4,5 @@ outdirs/
 __pycache__/
 wandb/
 win_cache/
+build/
+cpp_lib/
