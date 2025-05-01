@@ -1,17 +1,12 @@
 from __future__ import absolute_import, annotations
 
-import cpp_game
+import random
 
 from .settings import Settings
 from .state import State
 from .tasks import AssignedTask, get_task_defs
 from .types import TRUMP_SUIT_NUM, Action, Card, Phase, Signal, SignalValue
 from .utils import split_by_suit
-
-
-def rng_shuffle(li, rng: cpp_game.Rng):
-    idxs = rng.shuffle_idxs(len(li))
-    return [li[idx] for idx in idxs]
 
 
 class Engine:
@@ -32,13 +27,13 @@ class Engine:
         self.settings = settings
         self.reset_state(seed=seed)
 
-    def gen_hands(self, rng: cpp_game.Rng) -> list[list[Card]]:
+    def gen_hands(self, rng) -> list[list[Card]]:
         deck = [
             Card(rank, suit)
             for suit in self.settings.get_suits()
             for rank in range(1, self.settings.get_suit_length(suit) + 1)
         ]
-        deck = rng_shuffle(deck, rng)
+        rng.shuffle(deck)
 
         hands: list[list[Card]] = [[] for _ in range(self.settings.num_players)]
         cur_player = rng.randint(0, self.settings.num_players - 1)
@@ -50,7 +45,7 @@ class Engine:
 
         return hands
 
-    def gen_tasks(self, leader: int, rng: cpp_game.Rng) -> list[list[AssignedTask]]:
+    def gen_tasks(self, leader: int, rng) -> list[list[AssignedTask]]:
         task_defs = get_task_defs(self.settings.bank)
         if self.settings.task_idxs:
             task_idxs = list(self.settings.task_idxs)
@@ -86,7 +81,7 @@ class Engine:
         ]
         if self.settings.task_distro in ["fixed", "shuffle"]:
             if self.settings.task_distro == "shuffle":
-                task_idxs = rng_shuffle(task_idxs, rng)
+                rng.shuffle(task_idxs)
                 start_player = rng.randint(0, self.settings.num_players - 1)
             else:
                 start_player = leader
@@ -117,7 +112,7 @@ class Engine:
         return assigned_tasks
 
     def reset_state(self, seed: int | None = None) -> None:
-        rng = cpp_game.Rng(seed)
+        rng = random.Random(seed)
         hands = self.gen_hands(rng)
         leader = [
             Card(
