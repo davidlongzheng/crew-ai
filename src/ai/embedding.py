@@ -39,9 +39,9 @@ def aggregate(x, mask, *, method, dim, check_finite=True):
 
 
 def get_pos_embed(num_pos, output_dim):
-    pos_idx = torch.arange(num_pos, dtype=torch.float32)
+    pos_idx = torch.arange(num_pos, dtype=torch.float)
     assert output_dim % 2 == 0
-    channel_idx = torch.arange(output_dim // 2, dtype=torch.float32)
+    channel_idx = torch.arange(output_dim // 2, dtype=torch.float)
     freq = 1.0 / (0.5 * num_pos ** (channel_idx / (output_dim // 2)))
 
     arg = torch.einsum("p,c->pc", pos_idx, freq)

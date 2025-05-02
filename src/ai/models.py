@@ -103,113 +103,7 @@ class HistoryModel(nn.Module):
 
         if seq_lengths is not None:
             x = pack_padded_sequence(
-                x, seq_lengths, enforce_sorted=False, batch_first=True
-            )  # type: ignore
-        elif self.single_step:
-            x = x.unsqueeze(dim=-2)
-
-        x, state = self.lstm(x, self.state)
-
-        if seq_lengths is not None:
-            x, _ = pad_packed_sequence(x, padding_value=0.0, batch_first=True)  # type: ignore
-        elif self.single_step:
-            x = x.squeeze(dim=-2)
-
-        # Only save state if we are using the model one action
-        # at a time.
-        if self.single_step:
-            self.state = state
-
-        x = self.fc(x)
-        if self.dropout:
-            x = self.dropout(x)
-        return x
-
-
-class HistAttnModel(nn.Module):
-    def __init__(
-        self,
-        player_embed: nn.Module,
-        trick_embed: nn.Module,
-        card_embed: nn.Module,
-        turn_embed: nn.Module,
-        phase_embed: nn.Module,
-        embed_dim: int,
-        hidden_dim: int,
-        num_layers: int,
-        output_dim: int,
-        dropout: float,
-        use_layer_norm: bool,
-        use_tasks: bool,
-        tasks_embed_dim: int,
-    ):
-        super().__init__()
-        self.player_embed = player_embed
-        self.trick_embed = trick_embed
-        self.card_embed = card_embed
-        self.turn_embed = turn_embed
-        self.phase_embed = phase_embed
-        self.use_tasks = use_tasks
-
-        input_dim = 5 * embed_dim
-        if use_tasks:
-            input_dim += tasks_embed_dim
-        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-        self.attn = nn.MultiheadAttention(
-            input_size=input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=0.0,  # nocommit
-        )
-        self.output_dim = output_dim
-        self.fc = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout) if dropout else None
-        self.state = None
-        self.single_step = False
-
-    def start_single_step(self):
-        self.single_step = True
-        self.state = None
-
-    def stop_single_step(self):
-        self.single_step = False
-        self.state = None
-
-    def forward(
-        self,
-        hist_inps: TensorDict,
-        seq_lengths: Tensor | None = None,
-        tasks_embed: Tensor | None = None,
-    ) -> Tensor:
-        assert (seq_lengths is not None) == (len(hist_inps["player_idxs"].shape) == 2)
-        player_embed = self.player_embed(hist_inps["player_idxs"])
-        trick_embed = self.trick_embed(hist_inps["tricks"])
-        card_embed = self.card_embed(hist_inps["cards"])
-        turn_embed = self.turn_embed(hist_inps["turns"])
-        phase_embed = self.phase_embed(hist_inps["phases"])
-        inps = [player_embed, trick_embed, card_embed, turn_embed, phase_embed]
-        if self.use_tasks:
-            assert tasks_embed is not None
-            inps.append(tasks_embed)
-        else:
-            assert tasks_embed is None
-        x = torch.cat(inps, dim=-1)
-        if self.single_step:
-            assert not self.training
-            assert len(x.shape) <= 2
-
-        if not self.single_step and self.state is not None:
-            raise Exception(
-                "Forgot to stop_single_step() before going back to multi-step mode."
-            )
-
-        if self.layer_norm:
-            x = self.layer_norm(x)
-
-        if seq_lengths is not None:
-            x = pack_padded_sequence(
-                x, seq_lengths, enforce_sorted=False, batch_first=True
+                x, seq_lengths.to("cpu"), enforce_sorted=False, batch_first=True
             )  # type: ignore
         elif self.single_step:
             x = x.unsqueeze(dim=-2)
@@ -353,9 +247,9 @@ class PolicyHead(nn.Module):
         num_tricks_left = num_tricks - trick
         if signal_prior == "exp":
             decay = 0.6
-            self.p_signal = (1 - decay) / (1 - decay**num_tricks_left)
+            self.register_buffer("p_signal", (1 - decay) / (1 - decay**num_tricks_left))
         else:
-            self.p_signal = 2.0 / (num_tricks_left + 1.0)
+            self.register_buffer("p_signal", 2.0 / (num_tricks_left + 1.0))
 
     def forward(
         self,

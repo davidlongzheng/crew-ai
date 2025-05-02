@@ -2,7 +2,7 @@ from __future__ import absolute_import
 
 import shutil
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import nullcontext
 from dataclasses import asdict
 from functools import cache
@@ -100,11 +100,11 @@ def gae_advantage_discount(num_moves, gae_lambda, device, dtype):
 
 
 class Timer:
-    def __init__(self, writer: SummaryWriter, log_first=False):
+    def __init__(self, writer: SummaryWriter, log_first_n=3):
         self.writer = writer
         self.times: dict[str, float | None] = {}
-        self.log_first = log_first
-        self.has_logged: set[str] = set()
+        self.log_first_n = log_first_n
+        self.num_logged: defaultdict = defaultdict(lambda: 0)
 
     def start(self, key):
         assert self.times.get(key) is None
@@ -114,9 +114,9 @@ class Timer:
         assert self.times.get(key) is not None
         elapsed = time.time() - self.times[key]
         self.writer.add_scalar(f"times/{key}_time", elapsed, global_step)
-        if self.log_first and key not in self.has_logged:
+        if self.num_logged[key] < self.log_first_n:
             logger.info(f"{key}_time: {elapsed:.3f}s")
-            self.has_logged.add(key)
+        self.num_logged[key] += 1
         self.times[key] = None
 
 
@@ -124,6 +124,7 @@ def compute_advantage(
     td: TensorDict,
     gae_lambda: float,
     pv_model: PolicyValueModel,
+    device: torch.device,
 ):
     with torch.no_grad():
         _, td["orig_values"], _ = pv_model(td["inps"])
@@ -136,7 +137,7 @@ def compute_advantage(
     fut_values[..., -1] = 0.0
     # resids here refers to Bellman TD residuals.
     resids = td["rewards"] + fut_values - values
-    advantages = resids @ gae_advantage_discount(T, gae_lambda, td.device, resids.dtype)
+    advantages = resids @ gae_advantage_discount(T, gae_lambda, device, resids.dtype)
     value_targets = td["rewards"].flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1])
 
     # (N, T)
@@ -156,6 +157,11 @@ def compute_advantage(
 @cache
 def get_mse_loss():
     return nn.MSELoss()
+
+
+@cache
+def get_huber_loss():
+    return nn.HuberLoss()
 
 
 @cache
@@ -289,6 +295,8 @@ def compute_loss(
     def get_value_loss(x, y):
         if value_loss_method == "mse":
             return get_mse_loss()(x, y)
+        elif value_loss_method == "huber":
+            return get_huber_loss()(x, y)
         elif value_loss_method == "smoothl1":
             return get_smooth_l1_loss(value_smooth_l1_beta)(x, y)
         else:
@@ -396,6 +404,7 @@ def get_train_data(
 
 
 def train_one_epoch(
+    round,
     epoch,
     mode,
     data_loader,
@@ -403,42 +412,60 @@ def train_one_epoch(
     optim,
     pv_model,
     aux_info_spec,
+    outdir,
 ):
     running_losses = Counter()
     num_steps_in_epoch = 0
-    for td_batch in data_loader:
-        if mode == "train":
-            optim.zero_grad()
 
-        with torch.no_grad() if mode == "val" else nullcontext():
-            (
-                (td_batch["probs"], td_batch["log_probs"]),
-                td_batch["values"],
-                td_batch["aux_info_preds"],
-            ) = pv_model(td_batch["inps"])
-
-        losses = compute_loss(
-            td_batch,
-            aux_info_spec,
-            hp.policy_ppo_clip_ratio,
-            hp.policy_ppo_coef,
-            hp.policy_entropy_coef,
-            hp.value_loss_method,
-            hp.value_smooth_l1_beta,
-            hp.value_coef,
-            hp.aux_info_coef,
+    if round == 0 and epoch == 0 and mode == "train":
+        prof = torch.profiler.profile(
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(outdir)),
+            record_shapes=True,
+            with_stack=True,
+            profile_memory=True,
+            with_flops=True,  # optional
         )
+    else:
+        prof = None
 
-        if mode == "train":
-            losses["loss"].backward()
-            if hp.grad_norm_clip:
-                clip_grad_norm_(pv_model.parameters(), hp.grad_norm_clip)
-            optim.step()
+    with prof if prof else nullcontext():
+        for td_batch in data_loader:
+            if mode == "train":
+                optim.zero_grad()
 
-        for k, v in losses.items():
-            running_losses[k] += v.item()
+            with torch.no_grad() if mode == "val" else nullcontext():
+                (
+                    (td_batch["probs"], td_batch["log_probs"]),
+                    td_batch["values"],
+                    td_batch["aux_info_preds"],
+                ) = pv_model(td_batch["inps"])
 
-        num_steps_in_epoch += 1
+            losses = compute_loss(
+                td_batch,
+                aux_info_spec,
+                hp.policy_ppo_clip_ratio,
+                hp.policy_ppo_coef,
+                hp.policy_entropy_coef,
+                hp.value_loss_method,
+                hp.value_smooth_l1_beta,
+                hp.value_coef,
+                hp.aux_info_coef,
+            )
+
+            if mode == "train":
+                losses["loss"].backward()
+                if hp.grad_norm_clip:
+                    clip_grad_norm_(pv_model.parameters(), hp.grad_norm_clip)
+                optim.step()
+
+            if prof is not None:
+                prof.step()
+
+            for k, v in losses.items():
+                running_losses[k] += v.item()
+
+            num_steps_in_epoch += 1
 
     losses = {}
     for k, v in running_losses.items():
@@ -495,6 +522,7 @@ def train_one_round(
                 losses,
                 num_steps_in_epoch,
             ) = train_one_epoch(
+                round=round,
                 epoch=epoch,
                 mode=mode,
                 data_loader=data_loader,
@@ -502,6 +530,7 @@ def train_one_round(
                 optim=optim,
                 pv_model=pv_model,
                 aux_info_spec=aux_info_spec,
+                outdir=outdir,
             )
             if mode == "train":
                 gc["num_steps"] += num_steps_in_epoch
@@ -574,7 +603,7 @@ def train(
     gc: Counter,
     engine_seeds: list[int] | None,
 ) -> None:
-    timer = Timer(writer, log_first=True)
+    timer = Timer(writer)
     aux_info_spec = get_aux_info_spec(settings)
 
     for round in range(start_round, hp.num_rounds):
@@ -614,7 +643,7 @@ def train(
         )
 
         timer.start("advantage")
-        compute_advantage(td, hp.gae_lambda, pv_model)
+        compute_advantage(td, hp.gae_lambda, pv_model, device)
         for k in ["orig_value", "value_target", "unnorm_advantage"]:
             writer.add_scalar(f"rewards/{k}_mean", td[f"{k}s"].mean(), round)
             writer.add_scalar(f"rewards/{k}_std", td[f"{k}s"].std(), round)

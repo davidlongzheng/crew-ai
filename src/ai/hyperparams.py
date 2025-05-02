@@ -125,7 +125,7 @@ class HyperparamsType(click.ParamType):
             kwargs.pop(batch_alias)
 
         if "float_dtype" in kwargs:
-            kwargs["float_dtype"] = getattr(torch, "float_dtype")
+            kwargs["float_dtype"] = getattr(torch, kwargs["float_dtype"])
 
         return Hyperparams(**kwargs)
 

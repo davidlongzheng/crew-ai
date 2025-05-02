@@ -1,0 +1,9 @@
+build/
+cpp_lib/
+**/__pycache__/
+.git/
+.mypy_cache/
+venv/
+.pytest_cache/
+.ruff_cache/
+.vscode/
