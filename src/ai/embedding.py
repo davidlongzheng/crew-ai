@@ -1,3 +1,5 @@
+from functools import cached_property
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -150,6 +152,10 @@ class HandModel(nn.Module):
         assert agg_method in AGG_METHODS, agg_method
         self.agg_method = agg_method
 
+    @cached_property
+    def hand_params(self):
+        return list(self.mlp.parameters())
+
     def forward(self, x, check_finite=True):
         mask = (x[..., 0] == -1).unsqueeze(-1)
         x = self.card_model(x)
@@ -190,6 +196,10 @@ class TasksModel(nn.Module):
         assert agg_method in AGG_METHODS, agg_method
         self.agg_method = agg_method
 
+    @cached_property
+    def tasks_params(self):
+        return list(self.mlp.parameters())
+
     def forward(self, x, check_finite=True):
         """Input: (..., K, 2)"""
         # (..., K, 1)
@@ -208,61 +218,6 @@ class TasksModel(nn.Module):
         x = aggregate(
             x, mask, method=self.agg_method, dim=-2, check_finite=check_finite
         )
-        return x
-
-
-class HandsModel(nn.Module):
-    def __init__(
-        self,
-        output_dim: int,
-        hand_model: HandModel,
-        player_model: PaddedEmbed,
-        hidden_dim: int,
-        num_hidden_layers: int,
-        use_layer_norm: bool,
-        dropout: float,
-        agg_method: str,
-    ):
-        super().__init__()
-        self.hand_model = hand_model
-        self.player_model = player_model
-        self.input_dim = hand_model.output_dim + player_model.output_dim
-        self.layer_norm = nn.LayerNorm(self.input_dim) if use_layer_norm else None
-        self.output_dim = output_dim
-        self.mlp = MLP(
-            self.input_dim,
-            hidden_dim,
-            output_dim,
-            num_hidden_layers,
-            dropout=dropout,
-        )
-        assert agg_method in AGG_METHODS, agg_method
-        self.agg_method = agg_method
-
-    def forward(self, x):
-        # inp = (N,T,P,H,2) out = (N,T,P,F)
-        x = self.hand_model(x, check_finite=False)
-        # For any players with no cards left, it's possible
-        # for this to be non-finite
-        mask = (~x[..., 0].isfinite()).unsqueeze(-1)
-        x = x.masked_fill(
-            mask,
-            0.0,
-        )
-
-        # (P,)
-        player_idx = torch.arange(x.shape[-2], dtype=torch.int8)
-        # (P, F)
-        player_embed = self.player_model(player_idx)
-        x = torch.cat(
-            [x, player_embed.expand(*x.shape[:2], *player_embed.shape)], dim=-1
-        )
-
-        if self.layer_norm:
-            x = self.layer_norm(x)
-
-        x = self.mlp(x)
-        x = aggregate(x, mask, method=self.agg_method, dim=-2)
         return x
 
 

@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import cast
 
 import pandas as pd
@@ -11,7 +12,6 @@ from .aux_info import get_aux_info_spec
 from .embedding import (
     CardModel,
     HandModel,
-    HandsModel,
     PaddedEmbed,
     TasksModel,
     get_embed_models,
@@ -36,6 +36,7 @@ class HistoryModel(nn.Module):
         use_layer_norm: bool,
         use_tasks: bool,
         tasks_embed_dim: int,
+        use_tformer: bool,
     ):
         super().__init__()
         self.player_embed = player_embed
@@ -48,19 +49,46 @@ class HistoryModel(nn.Module):
         input_dim = 5 * embed_dim
         if use_tasks:
             input_dim += tasks_embed_dim
-        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-        self.lstm = nn.LSTM(
-            input_size=input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=(dropout if num_layers > 1 else 0.0),
-        )
+
+        self.use_tformer = use_tformer
+        if use_tformer:
+            self.input_embed = nn.Linear(input_dim, hidden_dim)
+            self.tformer = nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=hidden_dim,
+                    nhead=4,
+                    batch_first=True,
+                    dim_feedforward=hidden_dim * 4,
+                    dropout=dropout,
+                    norm_first=True,
+                ),
+                num_layers=num_layers,
+            )
+            self.layer_norm = nn.LayerNorm(hidden_dim) if use_layer_norm else None
+
+            self.register_buffer("memory", torch.zeros(1, 1, hidden_dim))
+        else:
+            self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=(dropout if num_layers > 1 else 0.0),
+            )
         self.output_dim = output_dim
         self.fc = nn.Linear(hidden_dim, output_dim)
         self.dropout = nn.Dropout(dropout) if dropout else None
-        self.state = None
+        self.state: torch.Tensor | None = None
         self.single_step = False
+
+    @cached_property
+    def hist_params(self):
+        return (
+            list(self.tformer.parameters())
+            if self.use_tformer
+            else list(self.lstm.parameters())
+        )
 
     def start_single_step(self):
         self.single_step = True
@@ -98,27 +126,54 @@ class HistoryModel(nn.Module):
                 "Forgot to stop_single_step() before going back to multi-step mode."
             )
 
-        if self.layer_norm:
-            x = self.layer_norm(x)
+        if self.use_tformer:
+            x = self.input_embed(x)
 
-        if seq_lengths is not None:
-            x = pack_padded_sequence(
-                x, seq_lengths.to("cpu"), enforce_sorted=False, batch_first=True
-            )  # type: ignore
-        elif self.single_step:
-            x = x.unsqueeze(dim=-2)
+            if self.single_step:
+                # F or B, F
+                x = x.unsqueeze(dim=-2)
+                if self.state is not None:
+                    x = torch.cat([self.state, x], dim=-2)
+                self.state = x
 
-        x, state = self.lstm(x, self.state)
+            assert len(x.shape) >= 2
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(
+                x.size(-2), device=x.device
+            )
+            x = self.tformer(
+                x,
+                self.memory.expand(x.size(0), -1, -1),
+                tgt_mask=tgt_mask,
+                tgt_is_causal=True,
+            )
 
-        if seq_lengths is not None:
-            x, _ = pad_packed_sequence(x, padding_value=0.0, batch_first=True)  # type: ignore
-        elif self.single_step:
-            x = x.squeeze(dim=-2)
+            if self.single_step:
+                x = x[..., -1, :].squeeze(dim=-2)
 
-        # Only save state if we are using the model one action
-        # at a time.
-        if self.single_step:
-            self.state = state
+            if self.layer_norm:
+                x = self.layer_norm(x)
+        else:
+            if self.layer_norm:
+                x = self.layer_norm(x)
+
+            if seq_lengths is not None:
+                x = pack_padded_sequence(
+                    x, seq_lengths.to("cpu"), enforce_sorted=False, batch_first=True
+                )  # type: ignore
+            elif self.single_step:
+                x = x.unsqueeze(dim=-2)
+
+            x, state = self.lstm(x, self.state)
+
+            if seq_lengths is not None:
+                x, _ = pad_packed_sequence(x, padding_value=0.0, batch_first=True)  # type: ignore
+            elif self.single_step:
+                x = x.squeeze(dim=-2)
+
+            # Only save state if we are using the model one action
+            # at a time.
+            if self.single_step:
+                self.state = state
 
         x = self.fc(x)
         if self.dropout:
@@ -130,7 +185,7 @@ class BackboneModel(nn.Module):
     def __init__(
         self,
         hist_model: HistoryModel,
-        hand_embed: HandModel | HandsModel,
+        hand_embed: HandModel,
         player_embed: nn.Module,
         trick_embed: nn.Module,
         turn_embed: nn.Module,
@@ -143,6 +198,8 @@ class BackboneModel(nn.Module):
         dropout: float,
         use_layer_norm: bool,
         use_skip: bool,
+        use_resid: bool,
+        use_final_layer_norm: bool,
     ):
         super().__init__()
         self.hist_model = hist_model
@@ -153,6 +210,7 @@ class BackboneModel(nn.Module):
         self.phase_embed = phase_embed
         self.tasks_embed = tasks_embed
         self.use_skip = use_skip
+        self.use_resid = use_resid
         self.output_dim = output_dim
         if self.use_skip:
             self.output_dim += self.hist_model.output_dim
@@ -162,14 +220,38 @@ class BackboneModel(nn.Module):
             + self.tasks_embed.output_dim
             + self.hand_embed.output_dim
         )
-        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-        self.mlp = MLP(
-            input_dim,
-            hidden_dim,
-            output_dim,
-            num_hidden_layers,
-            dropout=dropout,
+        if self.use_resid:
+            assert not self.use_skip
+            self.input_embed = nn.Linear(input_dim, output_dim)
+            self.layer_norm = nn.LayerNorm(output_dim) if use_layer_norm else None
+            self.mlp = MLP(
+                output_dim,
+                hidden_dim,
+                output_dim,
+                num_hidden_layers,
+                dropout=dropout,
+            )
+        else:
+            self.input_embed = None
+            self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
+            self.mlp = MLP(
+                input_dim,
+                hidden_dim,
+                output_dim,
+                num_hidden_layers,
+                dropout=dropout,
+            )
+
+        self.final_layer_norm = (
+            nn.LayerNorm(output_dim) if use_final_layer_norm else None
         )
+
+    @cached_property
+    def mlp_params(self):
+        ret = list(self.mlp.parameters())
+        if self.input_embed:
+            ret += list(self.input_embed.parameters())
+        return ret
 
     def start_single_step(self):
         self.hist_model.start_single_step()
@@ -201,12 +283,24 @@ class BackboneModel(nn.Module):
 
         inps = [hist_embed, private_embed, tasks_embed, hand_embed]
         x = torch.cat(inps, dim=-1)
+
+        if self.use_resid:
+            x = self.input_embed(x)
+
         if self.layer_norm:
             x = self.layer_norm(x)
 
-        x = self.mlp(x)
+        if self.use_resid:
+            x = x + self.mlp(x)
+        else:
+            x = self.mlp(x)
+
+        if self.final_layer_norm:
+            x = self.final_layer_norm(x)
+
         if self.use_skip:
             x = torch.cat([x, hist_embed], dim=-1)
+
         return x
 
 
@@ -250,6 +344,10 @@ class PolicyHead(nn.Module):
             self.register_buffer("p_signal", (1 - decay) / (1 - decay**num_tricks_left))
         else:
             self.register_buffer("p_signal", 2.0 / (num_tricks_left + 1.0))
+
+    @cached_property
+    def head_params(self):
+        return list(self.key_model.parameters()) + list(self.query_model.parameters())
 
     def forward(
         self,
@@ -345,6 +443,24 @@ class PolicyValueModel(nn.Module):
         self.value_head = value_head
         self.aux_info_head = aux_info_head
 
+    @cached_property
+    def param_groups(self):
+        return {
+            "policy_head": self.policy_head.head_params,
+            "value_head": list(self.value_head.parameters()),
+            "hist": self.backbone_model.hist_model.hist_params,
+            "mlp": self.backbone_model.mlp_params,
+            # phase, trick, turn
+            "basic_embed": list(self.backbone_model.phase_embed.parameters())
+            + list(self.backbone_model.player_embed.parameters())
+            + list(self.backbone_model.trick_embed.parameters())
+            + list(self.backbone_model.turn_embed.parameters()),
+            "hand": list(self.backbone_model.hand_embed.hand_params),
+            "card": list(self.backbone_model.hand_embed.card_model.parameters()),
+            "task": list(self.backbone_model.tasks_embed.task_model.parameters()),
+            "tasks": list(self.backbone_model.tasks_embed.tasks_params),
+        }
+
     def start_single_step(self):
         self.backbone_model.start_single_step()
 
@@ -389,6 +505,7 @@ def get_models(
         hp.hist_use_layer_norm,
         hp.hist_use_tasks,
         hp.tasks_embed_dim,
+        hp.hist_use_tformer,
     )
     backbone_model = BackboneModel(
         hist_model,
@@ -405,6 +522,8 @@ def get_models(
         hp.backbone_dropout,
         hp.backbone_use_layer_norm,
         hp.backbone_use_skip,
+        hp.backbone_use_resid,
+        hp.backbone_use_final_layer_norm,
     )
     if hp.aux_info_coef:
         aux_info_head = AuxInfoHead(

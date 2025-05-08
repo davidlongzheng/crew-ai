@@ -18,7 +18,7 @@ class Hyperparams:
     num_epochs_per_round: int = 3
     # Number of trajectories in an epoch.
     num_train_rollouts_per_round: int = 8192
-    num_val_rollouts_per_round: int = 4096
+    num_val_rollouts_per_round: int = 1024
     # Number of trajectories in a batch.
     batch_size: int = 64
     lr: float = 1e-3
@@ -27,6 +27,9 @@ class Hyperparams:
     weight_decay: float = (
         1e-3  # trivial amount of weight decay. set to 1e0 to have an effect.
     )
+    # Adam betas
+    beta_1: float = 0.9
+    beta_2: float = 0.999
     early_stop_num_epochs: int | None = None
     policy_early_stop_max_kl: float = 0.10
     grad_norm_clip: float = 1.0
@@ -44,7 +47,7 @@ class Hyperparams:
     value_loss_method: str = "mse"
     value_smooth_l1_beta: float = 0.25
     value_coef: float = 1.0
-    aux_info_coef: float = 0.1
+    aux_info_coef: float = 0.0
 
     # For embeddings
     embed_dim: int = 32
@@ -69,14 +72,14 @@ class Hyperparams:
     tasks_dropout: float = 0.03
     tasks_agg_method: str = "maxpool"
 
-    # For public history LSTM
-    hist_use_attn: bool = False
+    # For public history LSTM/Transformer
     hist_hidden_dim: int = 32
     hist_output_dim: int = 32
     hist_num_layers: int = 1
     hist_use_layer_norm: bool = True
     hist_dropout: float = 0.03
     hist_use_tasks: bool = True
+    hist_use_tformer: bool = False
 
     # For backbone MLP
     backbone_hidden_dim: int = 32
@@ -85,6 +88,8 @@ class Hyperparams:
     backbone_dropout: float = 0.03
     backbone_use_layer_norm: bool = True
     backbone_use_skip: bool = True
+    backbone_use_resid: bool = False
+    backbone_use_final_layer_norm: bool = True
 
     # For policy network
     policy_hidden_dim: int = 32
@@ -96,6 +101,8 @@ class Hyperparams:
 
     # Only use historical aux info values.
     aux_info_hist_only: bool = False
+
+    use_profile: bool = False
 
 
 class HyperparamsType(click.ParamType):

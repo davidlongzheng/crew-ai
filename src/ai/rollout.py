@@ -82,14 +82,6 @@ def do_batch_rollout(
             private_inputs_pr_pt[rollout_idx].append(
                 {
                     "hand": encode_hand(engine.state.hands[engine.state.cur_player]),
-                    "hands": [
-                        encode_hand(
-                            engine.state.hands[
-                                (engine.state.captain + pidx) % settings.num_players
-                            ]
-                        )
-                        for pidx in range(settings.num_players)
-                    ],
                     "trick": engine.state.trick,
                     "player_idx": player_idx,
                     "turn": turn,

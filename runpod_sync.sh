@@ -2,9 +2,9 @@
 set -euxo pipefail
 
 HOST=194.68.245.86
-PORT=22009
+PORT=22121
 
-DEST_PROJ_DIR=/workspace/crew-ai
+DEST_PROJ_DIR=/root/crew-ai
 
 function run_remote() {
     ssh -p ${PORT} root@${HOST} $@

@@ -14,9 +14,10 @@ import numpy as np
 import torch
 from loguru import logger
 from tensordict import TensorDict
-from torch import nn
+from torch import GradScaler, nn
 from torch.nn.utils import clip_grad_norm_
 from torch.nn.utils.rnn import pad_sequence
+from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -42,7 +43,7 @@ def should_keep_outdir(x):
     return (x / "_running").exists() or (x / "_keep").exists()
 
 
-def create_optim(models, lr: float, weight_decay: float):
+def create_optim(models, hp: Hyperparams):
     named_params = []
     seen_params = set()
     for model in models:
@@ -63,25 +64,26 @@ def create_optim(models, lr: float, weight_decay: float):
     ]
     optimizer = torch.optim.AdamW(
         param_groups,
-        lr=lr,
-        weight_decay=weight_decay,
+        lr=hp.lr,
+        weight_decay=hp.weight_decay,
+        betas=(hp.beta_1, hp.beta_2),
     )
     return optimizer
 
 
-def create_lr_sched(optimizer, lr_schedule, num_rounds, lr, lr_min_frac):
-    if lr_schedule == "cosine":
+def create_lr_sched(optimizer, hp):
+    if hp.lr_schedule == "cosine":
         return torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=num_rounds,
-            eta_min=lr * lr_min_frac,
+            T_max=hp.num_rounds,
+            eta_min=hp.lr * hp.lr_min_frac,
         )
-    elif lr_schedule == "linear":
+    elif hp.lr_schedule == "linear":
         return torch.optim.lr_scheduler.LambdaLR(
-            optimizer, lambda x: 1 - (x / (num_rounds - 1)) * (1 - lr_min_frac)
+            optimizer, lambda x: 1 - (x / (hp.num_rounds - 1)) * (1 - hp.lr_min_frac)
         )
     else:
-        assert lr_schedule == "constant", lr_schedule
+        assert hp.lr_schedule == "constant", hp.lr_schedule
         return torch.optim.lr_scheduler.ConstantLR(
             optimizer,
             factor=1.0,
@@ -332,6 +334,32 @@ def compute_loss(
     return ret
 
 
+def compute_grad_norms(losses, pv_model):
+    ret = {}
+    for loss_name in ["ppo", "value", "entropy"]:
+        params = [y for x in pv_model.param_groups.values() for y in x]
+        grads = torch.autograd.grad(
+            losses[f"{loss_name}_loss"],
+            params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+        assert len(params) == len(grads)
+
+        i = 0
+        for group_name, param_group in pv_model.param_groups.items():
+            grads_group = grads[i : i + len(param_group)]
+            g_norms = [g.norm(2) for g in grads_group if g is not None]
+            if g_norms:
+                ret[f"{loss_name}_{group_name}"] = torch.norm(
+                    torch.stack(g_norms), 2
+                ).item()
+            i += len(param_group)
+
+    return ret
+
+
 def get_train_data(
     hp: Hyperparams,
     settings: Settings,
@@ -413,13 +441,21 @@ def train_one_epoch(
     pv_model,
     aux_info_spec,
     outdir,
+    scaler,
 ):
     running_losses = Counter()
+    running_grad_norms = Counter()
     num_steps_in_epoch = 0
+    num_grad_norms = 0
 
-    if round == 0 and epoch == 0 and mode == "train":
+    if round == 0 and epoch == 0 and mode == "train" and hp.use_profile:
         prof = torch.profiler.profile(
-            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+            activities=(
+                [ProfilerActivity.CPU, ProfilerActivity.CUDA]
+                if scaler
+                else [ProfilerActivity.CPU]
+            ),
+            schedule=torch.profiler.schedule(wait=2, warmup=2, active=5, repeat=3),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(str(outdir)),
             record_shapes=True,
             with_stack=True,
@@ -430,50 +466,86 @@ def train_one_epoch(
         prof = None
 
     with prof if prof else nullcontext():
-        for td_batch in data_loader:
+        num_batches_per_epoch = len(data_loader)
+        for batch_idx, td_batch in enumerate(data_loader):
+            if prof is not None:
+                prof.step()
+
             if mode == "train":
                 optim.zero_grad()
 
             with torch.no_grad() if mode == "val" else nullcontext():
-                (
-                    (td_batch["probs"], td_batch["log_probs"]),
-                    td_batch["values"],
-                    td_batch["aux_info_preds"],
-                ) = pv_model(td_batch["inps"])
+                with (
+                    torch.autocast(device_type="cuda", dtype=torch.float16)
+                    if scaler
+                    else nullcontext()
+                ):
+                    (
+                        (td_batch["probs"], td_batch["log_probs"]),
+                        td_batch["values"],
+                        td_batch["aux_info_preds"],
+                    ) = pv_model(td_batch["inps"])
 
-            losses = compute_loss(
-                td_batch,
-                aux_info_spec,
-                hp.policy_ppo_clip_ratio,
-                hp.policy_ppo_coef,
-                hp.policy_entropy_coef,
-                hp.value_loss_method,
-                hp.value_smooth_l1_beta,
-                hp.value_coef,
-                hp.aux_info_coef,
-            )
+                    losses = compute_loss(
+                        td_batch,
+                        aux_info_spec,
+                        hp.policy_ppo_clip_ratio,
+                        hp.policy_ppo_coef,
+                        hp.policy_entropy_coef,
+                        hp.value_loss_method,
+                        hp.value_smooth_l1_beta,
+                        hp.value_coef,
+                        hp.aux_info_coef,
+                    )
 
             if mode == "train":
-                losses["loss"].backward()
+                # Skip round == 0 for this calculation to avoid interacting with
+                # use_profile=True.
+                if (
+                    (not prof or round > 0)
+                    and epoch == 0
+                    and batch_idx < 0.05 * num_batches_per_epoch
+                ):
+                    grad_norms = compute_grad_norms(losses, pv_model)
+                    for k, v in grad_norms.items():
+                        running_grad_norms[k] += v
+                    num_grad_norms += 1
+
+                if scaler:
+                    scaler.scale(losses["loss"]).backward()
+                    scaler.unscale_(optim)
+                else:
+                    losses["loss"].backward()
+
                 if hp.grad_norm_clip:
                     clip_grad_norm_(pv_model.parameters(), hp.grad_norm_clip)
-                optim.step()
 
-            if prof is not None:
-                prof.step()
+                if scaler:
+                    scaler.step(optim)
+                    scaler.update()
+                else:
+                    optim.step()
 
             for k, v in losses.items():
                 running_losses[k] += v.item()
 
             num_steps_in_epoch += 1
 
-    losses = {}
-    for k, v in running_losses.items():
-        losses[k] = v / num_steps_in_epoch
+    if prof:
+        print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=40))
+        print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=40))
+
+    losses = {k: v / num_steps_in_epoch for k, v in running_losses.items()}
+
+    if num_grad_norms > 0:
+        grad_norms = {k: v / num_grad_norms for k, v in running_grad_norms.items()}
+    else:
+        grad_norms = None
 
     return (
         losses,
         num_steps_in_epoch,
+        grad_norms,
     )
 
 
@@ -489,6 +561,7 @@ def train_one_round(
     log_epoch,
     outdir,
     aux_info_spec,
+    scaler,
 ):
     train_data_loader = DataLoader(
         td[: hp.num_train_rollouts_per_round],
@@ -521,6 +594,7 @@ def train_one_round(
             (
                 losses,
                 num_steps_in_epoch,
+                grad_norms,
             ) = train_one_epoch(
                 round=round,
                 epoch=epoch,
@@ -531,10 +605,15 @@ def train_one_round(
                 pv_model=pv_model,
                 aux_info_spec=aux_info_spec,
                 outdir=outdir,
+                scaler=scaler,
             )
             if mode == "train":
                 gc["num_steps"] += num_steps_in_epoch
                 gc["num_epochs"] += 1
+
+            if grad_norms:
+                for k, v in grad_norms.items():
+                    writer.add_scalar(f"grad_norms/{k}", v, gc["num_epochs"])
 
             for k, v in losses.items():
                 if k == "loss":
@@ -595,6 +674,7 @@ def train(
     pv_model: PolicyValueModel,
     optim: torch.optim.Optimizer,
     lr_sched: torch.optim.lr_scheduler.LRScheduler,
+    scaler: torch.GradScaler | None,
     settings: Settings,
     hp: Hyperparams,
     writer: SummaryWriter,
@@ -662,6 +742,7 @@ def train(
             log_epoch=(hp.num_rounds <= 5),
             outdir=outdir,
             aux_info_spec=aux_info_spec,
+            scaler=scaler,
         )
         timer.finish("training", round)
 
@@ -673,6 +754,7 @@ def train(
                 "optim": optim.state_dict(),
                 "lr_sched": lr_sched.state_dict(),
                 "gc": gc,
+                "scaler": (scaler.state_dict() if scaler else None),
             },
             outdir / "checkpoint.pth",
         )
@@ -808,14 +890,14 @@ def main(
         for m in models.values():
             m.to(device)
         pv_model = cast(PolicyValueModel, models["pv"])
-        optim = create_optim([pv_model], hp.lr, hp.weight_decay)
-        lr_sched = create_lr_sched(
-            optim, hp.lr_schedule, hp.num_rounds, hp.lr, hp.lr_min_frac
-        )
+        optim = create_optim([pv_model], hp)
+        lr_sched = create_lr_sched(optim, hp)
+        scaler = GradScaler() if device.type == "cuda" else None
         for obj, key in [
             (pv_model, "pv_model"),
             (optim, "optim"),
             (lr_sched, "lr_sched"),
+            (scaler, "scaler"),
         ]:
             if key in orig_state_dict:
                 obj.load_state_dict(orig_state_dict[key])
@@ -847,6 +929,7 @@ def main(
                 pv_model,
                 optim,
                 lr_sched,
+                scaler,
                 settings,
                 hp,
                 writer,
@@ -860,7 +943,7 @@ def main(
 
 
 if __name__ == "__main__":
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     from ipdb import launch_ipdb_on_exception
 
     with launch_ipdb_on_exception():
