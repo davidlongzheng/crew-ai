@@ -310,20 +310,24 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("log_probs", &RolloutResults::log_probs)
         .def_readwrite("actions", &RolloutResults::actions)
         .def_readwrite("rewards", &RolloutResults::rewards)
-        .def_readwrite("num_success_tasks_pp", &RolloutResults::num_success_tasks_pp)
+        .def_readwrite("frac_success", &RolloutResults::frac_success)
         .def_readwrite("win", &RolloutResults::win);
 
     // Bind Rollout class
     py::class_<Rollout>(m, "Rollout")
-        .def(py::init<const Settings &, int>(),
-             py::arg("settings"), py::arg("engine_seed"))
+        .def(py::init<const Settings &>(),
+             py::arg("settings"))
+        .def("reset_state", &Rollout::reset_state,
+             py::arg("engine_seed"))
         .def("move", &Rollout::move,
              py::arg("action_idx"), py::arg("probs"), py::arg("log_probs"));
 
     // Bind BatchRollout class
     py::class_<BatchRollout>(m, "BatchRollout")
-        .def(py::init<const Settings &, int, const std::vector<int>>(),
-             py::arg("settings"), py::arg("num_rollouts"),
+        .def(py::init<const Settings &, int>(),
+             py::arg("settings"), py::arg("num_rollouts"))
+        .def_readonly("num_rollouts", &BatchRollout::num_rollouts)
+        .def("reset_state", &BatchRollout::reset_state,
              py::arg("engine_seeds"))
         .def("get_move_inputs", &BatchRollout::get_move_inputs)
         .def("move", &BatchRollout::move,

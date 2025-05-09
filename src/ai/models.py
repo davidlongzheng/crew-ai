@@ -383,7 +383,7 @@ class PolicyHead(nn.Module):
         signal_phase = phase == 1
         # (...)
         n_valid_actions = (valid_actions[..., 0] != -1).sum(dim=-1).float()
-        p_signal = self.p_signal[trick.long()]
+        p_signal = cast(Tensor, self.p_signal)[trick.long()]
         eps = torch.tensor(1e-5)
         no_signal_wgt = torch.log(
             torch.maximum((1 - p_signal) / p_signal * (n_valid_actions - 1), eps)

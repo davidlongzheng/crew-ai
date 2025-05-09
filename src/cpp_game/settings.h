@@ -148,6 +148,12 @@ struct Settings
         }
     }
 
+    // Number of moves in a game
+    int get_seq_length() const
+    {
+        return num_players * num_tricks() * (use_signals ? 2 : 1);
+    }
+
     // Validation
     bool validate() const
     {

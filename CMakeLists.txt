@@ -7,9 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# sanitize build
 # set(CMAKE_BUILD_TYPE Debug)
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+
+# perf build
+set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")  
 
 # Find Python interpreter
 # Needed for pybind11
@@ -58,11 +63,12 @@ target_link_libraries(test_rollout PRIVATE Python::Python)
 target_link_libraries(test_rollout PRIVATE pybind11::headers)
 target_link_libraries(test_rollout PRIVATE game)
 
-# Install rules
+# Install game library into lib directory
 install(TARGETS game
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
 )
 
-# Install the Python module
+# Install the Python module into venv
+message(STATUS "Python site-packages directory: ${Python_SITEARCH}")
 install(TARGETS cpp_game DESTINATION ${Python_SITEARCH}) 

@@ -128,9 +128,13 @@ def do_batch_rollout(
                 log_probs_pr = log_probs_pr.to("cpu").numpy()
         else:
             probs_pr = [
-                np.full(len(x[-1]), 1.0 / len(x[-1])) for x in valid_actions_pr_pt
+                np.array(
+                    [1.0 / len(x[-1])] * len(x[-1])
+                    + [0.0] * (settings.max_hand_size + 1 - len(x[-1]))
+                )
+                for x in valid_actions_pr_pt
             ]
-            log_probs_pr = [np.log(x) for x in probs_pr]
+            log_probs_pr = [np.log(np.clip(x, 1e-8, None)) for x in probs_pr]
 
         # After running policy model
         for rollout_idx, engine in enumerate(engines):
@@ -228,8 +232,7 @@ def do_batch_rollout(
 
 
 def do_batch_rollout_cpp(
-    settings: cpp_game.Settings,
-    num_rollouts: int,
+    batch_rollout: cpp_game.BatchRollout,
     batch_seed: int | None = None,
     engine_seeds: int | list[int] | None = None,
     pv_model: PolicyValueModel | None = None,
@@ -239,6 +242,8 @@ def do_batch_rollout_cpp(
     """Does a roll out of one game and returns all the necessary
     inputs/actions/rewards to do training.
     """
+    num_rollouts = batch_rollout.num_rollouts
+
     if engine_seeds is None:
         engine_seed_rng = random.Random(batch_seed)
         engine_seeds = [
@@ -251,7 +256,7 @@ def do_batch_rollout_cpp(
         assert isinstance(engine_seeds, int)
         engine_seeds = [engine_seeds for _ in range(num_rollouts)]
 
-    batch_rollout = cpp_game.BatchRollout(settings, num_rollouts, engine_seeds)
+    batch_rollout.reset_state(engine_seeds)
     policy_rng = np.random.default_rng(batch_seed)
 
     if pv_model:
@@ -268,22 +273,21 @@ def do_batch_rollout_cpp(
         if pv_model:
             inps = TensorDict(
                 hist=TensorDict(
-                    player_idxs=torch.from_numpy(move_inps.hist_player_idxs),
-                    tricks=torch.from_numpy(move_inps.hist_tricks),
-                    cards=torch.from_numpy(move_inps.hist_cards),
-                    turns=torch.from_numpy(move_inps.hist_turns),
-                    phases=torch.from_numpy(move_inps.hist_phases),
+                    player_idxs=move_inps.hist_player_idxs,
+                    tricks=move_inps.hist_tricks,
+                    cards=move_inps.hist_cards,
+                    turns=move_inps.hist_turns,
+                    phases=move_inps.hist_phases,
                 ),
                 private=TensorDict(
-                    hand=torch.from_numpy(move_inps.hand),
-                    hands=torch.from_numpy(move_inps.hands),
-                    player_idx=torch.from_numpy(move_inps.player_idx),
-                    trick=torch.from_numpy(move_inps.trick),
-                    turn=torch.from_numpy(move_inps.turn),
-                    phase=torch.from_numpy(move_inps.phase),
+                    hand=move_inps.hand,
+                    player_idx=move_inps.player_idx,
+                    trick=move_inps.trick,
+                    turn=move_inps.turn,
+                    phase=move_inps.phase,
                 ),
-                valid_actions=torch.from_numpy(move_inps.valid_actions),
-                task_idxs=torch.from_numpy(move_inps.task_idxs),
+                valid_actions=move_inps.valid_actions,
+                task_idxs=move_inps.task_idxs,
                 seq_lengths=None,
             )
             inps = inps.to(device)
@@ -297,7 +301,7 @@ def do_batch_rollout_cpp(
             probs_pr = (move_inps.valid_actions[:, :, 0] >= 0).astype(
                 float
             ) / num_valid[:, None]
-            log_probs_pr = np.log(probs_pr)
+            log_probs_pr = np.log(np.clip(probs_pr, 1e-8, None))
 
         probs_pr /= probs_pr.sum(axis=1, keepdims=True)
         if argmax:
@@ -324,7 +328,6 @@ def do_batch_rollout_cpp(
             ),
             private=TensorDict(
                 hand=results.hand,
-                hands=results.hands,
                 player_idx=results.player_idx,
                 trick=results.trick,
                 turn=results.turn,
@@ -332,14 +335,15 @@ def do_batch_rollout_cpp(
             ),
             valid_actions=results.valid_actions,
             task_idxs=results.task_idxs,
-            # problematic
-            seq_lengths=None,
+            seq_lengths=torch.full(
+                (num_rollouts,), results.hist_player_idxs.shape[1], dtype=torch.int8
+            ),
         ),
         orig_probs=results.probs,
         orig_log_probs=results.log_probs,
         actions=results.actions,
         rewards=results.rewards,
-        num_success_tasks_pp=results.num_success_tasks_pp,
+        frac_success=results.frac_success,
         win=results.win,
     )
     ret = ret.to(device)

@@ -71,7 +71,8 @@ void test_single_rollout()
     // Create a rollout
     int engine_seed = 42;
     std::cout << "Creating rollout with engine_seed=" << engine_seed << std::endl;
-    Rollout rollout(settings, engine_seed);
+    Rollout rollout(settings);
+    rollout.reset_state(engine_seed);
 
     // Run the game until completion
     std::cout << "Running game until completion..." << std::endl;
@@ -106,10 +107,15 @@ void test_batch_rollout()
     Settings settings = get_preset("easy_p4");
 
     // Create a batch rollout
-    int num_rollouts = 1;
-    std::vector<int> engine_seeds = {42};
+    int num_rollouts = 1000;
+    std::vector<int> engine_seeds;
+    for (int i = 0; i < num_rollouts; ++i)
+    {
+        engine_seeds.push_back(i);
+    }
     std::cout << "Creating batch rollout with " << num_rollouts << " rollouts" << std::endl;
-    BatchRollout batch_rollout(settings, num_rollouts, engine_seeds);
+    BatchRollout batch_rollout(settings, num_rollouts);
+    batch_rollout.reset_state(engine_seeds);
 
     // Run until all games are done
     int batch_move_count = 0;
@@ -135,7 +141,7 @@ void test_batch_rollout()
             r_actions(i) = 0; // Choose first valid action for simplicity
         }
 
-        int max_num_actions = batch_rollout.rollouts[0].hand_pad_size;
+        int max_num_actions = batch_rollout.hand_pad_size;
 
         // Create random probabilities and log probs
         py::array_t<float> probs(py::array::ShapeContainer({num_rollouts, (long)max_num_actions}));
