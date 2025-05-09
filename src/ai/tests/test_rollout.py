@@ -4,7 +4,6 @@ from dataclasses import replace
 import numpy as np
 import torch
 from tensordict import TensorDict
-from torch.nn.utils.rnn import pad_sequence
 
 import cpp_game
 
@@ -13,18 +12,10 @@ from ..featurizer import featurize
 from ..rollout import do_batch_rollout, do_batch_rollout_cpp
 
 
-def pad_seq(inp, *, dtype=None):
-    return pad_sequence(
-        [torch.tensor(x, dtype=dtype) for x in inp],
-        batch_first=True,
-    )
-
-
 def test_batch_rollout_cpp():
     settings = get_preset("easy_p4")
     settings = replace(settings, use_signals=True)
-    cpp_settings = cpp_game.get_preset("easy_p4")
-    cpp_settings.use_signals = True
+    cpp_settings = settings.to_cpp()
     num_rollouts = 500
     batch_rollout = cpp_game.BatchRollout(cpp_settings, num_rollouts)
 
@@ -39,12 +30,11 @@ def test_batch_rollout_cpp():
             non_feature_dims=2,
             settings=settings,
         )
-        actions = pad_seq([x["actions"] for x in rollouts])
-        orig_probs = pad_seq([x["probs"] for x in rollouts], dtype=torch.float32)
-        orig_log_probs = pad_seq(
+        actions = torch.tensor([x["actions"] for x in rollouts])
+        orig_log_probs = torch.tensor(
             [x["log_probs"] for x in rollouts], dtype=torch.float32
         )
-        rewards = pad_seq([x["rewards"] for x in rollouts], dtype=torch.float32)
+        rewards = torch.tensor([x["rewards"] for x in rollouts], dtype=torch.float32)
         frac_success = torch.tensor(
             [
                 np.sum([y[0] for y in x["num_success_tasks_pp"]])
@@ -59,12 +49,12 @@ def test_batch_rollout_cpp():
         td = TensorDict(
             inps=inps,
             actions=actions,
-            orig_probs=orig_probs,
             orig_log_probs=orig_log_probs,
             rewards=rewards,
             frac_success=frac_success,
             win=win,
         )
+        td.auto_batch_size_()
         print(f"Took {time.time() - start_time:.3f} to run rollouts in Python")
 
         start_time = time.time()

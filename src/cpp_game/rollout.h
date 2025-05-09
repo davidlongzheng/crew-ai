@@ -58,7 +58,6 @@ struct RolloutResults
     py::array_t<int8_t> task_idxs;
 
     // Probability and reward tensors
-    py::array_t<float> probs;
     py::array_t<float> log_probs;
     py::array_t<long> actions;
     py::array_t<float> rewards;
@@ -73,7 +72,7 @@ struct Rollout
     void init_state();
     void reset_state(int engine_seed);
     void record_move_inputs();
-    void move(int action_idx, const py::array_t<float> &probs, const py::array_t<float> &log_probs);
+    void move(int action_idx, const py::array_t<float> &log_probs);
     void pop_last_history();
     // state
     const Settings &settings;
@@ -104,7 +103,6 @@ struct Rollout
     std::vector<int8_t> task_idxs;
 
     // probability and reward tensors
-    std::vector<float> probs_pt;
     std::vector<float> log_probs_pt;
     std::vector<long> actions_pt;
     std::vector<float> rewards_pt;
@@ -114,7 +112,7 @@ struct Rollout
     void add_card(std::vector<int8_t> &vec, const std::optional<Card> &card);
     void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand);
     void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions);
-    void add_probs(std::vector<float> &vec, const py::array_t<float> &probs);
+    void add_log_probs(std::vector<float> &vec, const py::array_t<float> &log_probs);
 };
 
 struct BatchRollout
@@ -123,7 +121,7 @@ struct BatchRollout
     void reset_state(const std::vector<int> &engine_seeds);
 
     const MoveInputs &get_move_inputs();
-    void move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &probs, const py::array_t<float> &log_probs);
+    void move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs);
     bool is_done() const;
     const RolloutResults &get_results();
 

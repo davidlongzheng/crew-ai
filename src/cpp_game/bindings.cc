@@ -306,7 +306,6 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("phase", &RolloutResults::phase)
         .def_readwrite("valid_actions", &RolloutResults::valid_actions)
         .def_readwrite("task_idxs", &RolloutResults::task_idxs)
-        .def_readwrite("probs", &RolloutResults::probs)
         .def_readwrite("log_probs", &RolloutResults::log_probs)
         .def_readwrite("actions", &RolloutResults::actions)
         .def_readwrite("rewards", &RolloutResults::rewards)
@@ -320,7 +319,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def("reset_state", &Rollout::reset_state,
              py::arg("engine_seed"))
         .def("move", &Rollout::move,
-             py::arg("action_idx"), py::arg("probs"), py::arg("log_probs"));
+             py::arg("action_idx"), py::arg("log_probs"));
 
     // Bind BatchRollout class
     py::class_<BatchRollout>(m, "BatchRollout")
@@ -331,7 +330,7 @@ PYBIND11_MODULE(cpp_game, m)
              py::arg("engine_seeds"))
         .def("get_move_inputs", &BatchRollout::get_move_inputs)
         .def("move", &BatchRollout::move,
-             py::arg("action_indices"), py::arg("probs"), py::arg("log_probs"))
+             py::arg("action_indices"), py::arg("log_probs"))
         .def("is_done", &BatchRollout::is_done)
         .def("get_results", &BatchRollout::get_results);
 

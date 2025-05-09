@@ -16,17 +16,17 @@ from loguru import logger
 from tensordict import TensorDict
 from torch import GradScaler, nn
 from torch.nn.utils import clip_grad_norm_
-from torch.nn.utils.rnn import pad_sequence
 from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+import cpp_game
+
 from ..game.settings import SETTINGS_TYPE, Settings, get_preset
 from .aux_info import get_aux_info_spec, set_aux_info_hist_only
-from .featurizer import featurize
 from .hyperparams import HP_TYPE, Hyperparams
 from .models import PolicyValueModel, get_models
-from .rollout import do_batch_rollout
+from .rollout import do_batch_rollout_cpp
 from .summary_writer import CustomSummaryWriter
 from .win_cache import CANON_WIN_CACHE_DIR, load_cache
 
@@ -133,8 +133,6 @@ def compute_advantage(
 
     values = td["orig_values"]
     T = values.shape[-1]
-    # only handle this case if it comes to that.
-    assert (td["inps"]["seq_lengths"] == T).all()
     fut_values = torch.roll(values, shifts=-1, dims=-1)
     fut_values[..., -1] = 0.0
     # resids here refers to Bellman TD residuals.
@@ -238,23 +236,18 @@ def compute_loss(
     # (N, T)
     actions = td["actions"]
     # (N, T, H)
-    orig_probs = td["orig_probs"]
-    probs = td["probs"]
     orig_log_probs = td["orig_log_probs"]
     log_probs = td["log_probs"]
     # (N, T)
     advantages = td["advantages"]
 
-    # only handle this case if it comes to that.
-    assert (td["inps"]["seq_lengths"] == advantages.shape[1]).all()
-
     # (N, T)
-    orig_action_probs = torch.gather(
-        orig_probs, dim=-1, index=actions.unsqueeze(-1)
+    orig_action_log_probs = torch.gather(
+        orig_log_probs, dim=-1, index=actions.unsqueeze(-1)
     ).squeeze(-1)
     # (N, T)
-    action_probs = torch.gather(
-        probs,
+    action_log_probs = torch.gather(
+        log_probs,
         dim=-1,
         index=actions.unsqueeze(-1),
     ).squeeze(-1)
@@ -276,14 +269,14 @@ def compute_loss(
             (1 - ppo_clip_ratio) * advantages,
         )
 
-    raw = (action_probs / orig_action_probs) * advantages
+    raw = (action_log_probs - orig_action_log_probs).exp() * advantages
     ceil = g(advantages)
     ppo_loss = masked_mean(-torch.minimum(raw, ceil))
     frac_clipped = masked_mean((raw > ceil).float())
     eps = 1e-8
     log_eps = np.log(eps)
-    clamped_probs = probs.clamp(min=eps)
-    clamped_orig_probs = orig_probs.clamp(min=eps)
+    clamped_probs = torch.exp(log_probs).clamp(min=eps)
+    clamped_orig_probs = torch.exp(orig_log_probs).clamp(min=eps)
     clamped_log_probs = log_probs.clamp(min=log_eps)
     clamped_orig_log_probs = orig_log_probs.clamp(min=log_eps)
     entropy_loss = masked_mean(torch.sum(clamped_probs * clamped_log_probs, dim=-1))
@@ -305,8 +298,6 @@ def compute_loss(
             raise ValueError(value_loss_method)
 
     values = td["values"]
-    # only handle this case if it comes to that.
-    assert (td["inps"]["seq_lengths"] == values.shape[1]).all()
     value_targets = td["value_targets"]
     value_loss = get_value_loss(values, value_targets)
 
@@ -360,77 +351,6 @@ def compute_grad_norms(losses, pv_model):
     return ret
 
 
-def get_train_data(
-    hp: Hyperparams,
-    settings: Settings,
-    device: torch.device,
-    pv_model: PolicyValueModel,
-    timer: Timer,
-    round: int,
-    engine_seeds: list[int] | None,
-):
-    def pad_seq(inp, *, dtype=None):
-        return pad_sequence(
-            [torch.tensor(x, dtype=dtype, device=device) for x in inp],
-            batch_first=True,
-        )
-
-    timer.start("rollout")
-    seed = int(torch.randint(0, 100_000_000, ()))
-    rollouts = do_batch_rollout(
-        settings,
-        num_rollouts=hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
-        batch_seed=seed,
-        engine_seeds=engine_seeds,
-        pv_model=pv_model,
-        device=device,
-    )
-    timer.finish("rollout", round)
-
-    timer.start("featurize")
-    inps = featurize(
-        public_history=[x["public_history"] for x in rollouts],
-        private_inputs=[x["private_inputs"] for x in rollouts],
-        valid_actions=[x["valid_actions"] for x in rollouts],
-        task_idxs=[x["task_idxs"] for x in rollouts],
-        non_feature_dims=2,
-        settings=settings,
-        device=device,
-    )
-    actions = pad_seq([x["actions"] for x in rollouts])
-    orig_probs = pad_seq([x["probs"] for x in rollouts])
-    orig_log_probs = pad_seq([x["log_probs"] for x in rollouts])
-    rewards = pad_seq([x["rewards"] for x in rollouts])
-    frac_success = torch.tensor(
-        [
-            np.sum([y[0] for y in x["num_success_tasks_pp"]])
-            / np.sum([y[1] for y in x["num_success_tasks_pp"]])
-            for x in rollouts
-        ],
-        device=device,
-    )
-    win = torch.tensor(
-        [x["win"] for x in rollouts],
-        device=device,
-    )
-    aux_infos = pad_seq([x["aux_infos"] for x in rollouts])
-
-    td = TensorDict(
-        inps=inps,
-        actions=actions,
-        orig_probs=orig_probs,
-        orig_log_probs=orig_log_probs,
-        rewards=rewards,
-        frac_success=frac_success,
-        win=win,
-        aux_infos=aux_infos,
-    )
-    td.auto_batch_size_()
-    timer.finish("featurize", round)
-
-    return td
-
-
 def train_one_epoch(
     round,
     epoch,
@@ -481,7 +401,7 @@ def train_one_epoch(
                     else nullcontext()
                 ):
                     (
-                        (td_batch["probs"], td_batch["log_probs"]),
+                        td_batch["log_probs"],
                         td_batch["values"],
                         td_batch["aux_info_preds"],
                     ) = pv_model(td_batch["inps"])
@@ -685,20 +605,25 @@ def train(
 ) -> None:
     timer = Timer(writer)
     aux_info_spec = get_aux_info_spec(settings)
+    cpp_settings = settings.to_cpp()
+    batch_rollout = cpp_game.BatchRollout(
+        cpp_settings, hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round
+    )
 
     for round in range(start_round, hp.num_rounds):
         logger.info(f"Round {round}")
         pv_model.eval()
 
-        td = get_train_data(
-            hp=hp,
-            settings=settings,
-            device=device,
-            pv_model=pv_model,
-            timer=timer,
-            round=round,
+        timer.start("rollout")
+        seed = int(torch.randint(0, 100_000_000, ()))
+        td = do_batch_rollout_cpp(
+            batch_rollout,
+            batch_seed=seed,
             engine_seeds=engine_seeds,
+            pv_model=pv_model,
+            device=device,
         )
+        timer.finish("rollout", round)
 
         mean_reward = td["rewards"].sum(dim=-1).mean()
         writer.add_scalar("rewards/reward_mean", mean_reward, round)

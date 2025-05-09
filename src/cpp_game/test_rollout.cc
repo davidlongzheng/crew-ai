@@ -91,7 +91,7 @@ void test_single_rollout()
         int action_idx = 0;
 
         // Make the move
-        rollout.move(action_idx, probs, log_probs);
+        rollout.move(action_idx, log_probs);
 
         move_count++;
     }
@@ -173,7 +173,7 @@ void test_batch_rollout()
         }
 
         // Make the moves
-        batch_rollout.move(action_indices, probs, log_probs);
+        batch_rollout.move(action_indices, log_probs);
         batch_move_count++;
     }
 

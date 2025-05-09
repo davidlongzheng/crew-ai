@@ -32,7 +32,6 @@ RolloutResults::RolloutResults(int num_rollouts, int seq_length, int hand_pad_si
       phase({num_rollouts, seq_length}),
       valid_actions({num_rollouts, seq_length, hand_pad_size, 2}),
       task_idxs({num_rollouts, seq_length, max_num_tasks, 2}),
-      probs({num_rollouts, seq_length, hand_pad_size}),
       log_probs({num_rollouts, seq_length, hand_pad_size}),
       actions({num_rollouts, seq_length}),
       rewards({num_rollouts, seq_length}),
@@ -60,7 +59,6 @@ Rollout::Rollout(const Settings &settings)
     valid_actions_pt.reserve(seq_length * hand_pad_size * 2);
     task_idxs.reserve(max_num_tasks * 2);
     actions_pt.reserve(seq_length);
-    probs_pt.reserve(seq_length * hand_pad_size);
     log_probs_pt.reserve(seq_length * hand_pad_size);
     rewards_pt.reserve(seq_length);
 
@@ -96,7 +94,6 @@ void Rollout::reset_state(int engine_seed)
     valid_actions_pt.clear();
     task_idxs.clear();
     actions_pt.clear();
-    probs_pt.clear();
     log_probs_pt.clear();
     actions_pt.clear();
     rewards_pt.clear();
@@ -162,10 +159,10 @@ void Rollout::add_valid_actions(std::vector<int8_t> &vec, const std::vector<Acti
     }
 }
 
-void Rollout::add_probs(std::vector<float> &vec, const py::array_t<float> &probs)
+void Rollout::add_log_probs(std::vector<float> &vec, const py::array_t<float> &log_probs)
 {
-    auto buffer = probs.data();
-    vec.insert(vec.end(), buffer, buffer + probs.size());
+    auto buffer = log_probs.data();
+    vec.insert(vec.end(), buffer, buffer + log_probs.size());
 }
 
 void Rollout::record_move_inputs()
@@ -185,7 +182,7 @@ void Rollout::record_move_inputs()
     add_valid_actions(valid_actions_pt, valid_actions);
 }
 
-void Rollout::move(int action_idx, const py::array_t<float> &probs, const py::array_t<float> &log_probs)
+void Rollout::move(int action_idx, const py::array_t<float> &log_probs)
 {
     if (engine->state.phase == Phase::kEnd)
     {
@@ -197,8 +194,7 @@ void Rollout::move(int action_idx, const py::array_t<float> &probs, const py::ar
 
     // Record the action and its probability
     actions_pt.push_back(action_idx);
-    add_probs(probs_pt, probs);
-    add_probs(log_probs_pt, log_probs);
+    add_log_probs(log_probs_pt, log_probs);
 
     // Record public history
     hist_player_idxs_pt.push_back(engine->state.get_player_idx());
@@ -260,10 +256,8 @@ const MoveInputs &BatchRollout::get_move_inputs()
     for (auto &rollout : rollouts)
     {
         // Update the rollout's arrays if game is not over
-        if (rollout.engine->state.phase != Phase::kEnd)
-        {
-            rollout.record_move_inputs();
-        }
+        assert(rollout.engine->state.phase != Phase::kEnd);
+        rollout.record_move_inputs();
 
         *hist_player_idxs_ptr = rollout.hist_player_idxs_pt.back();
         hist_player_idxs_ptr++;
@@ -297,27 +291,30 @@ const MoveInputs &BatchRollout::get_move_inputs()
     return move_inputs;
 }
 
-void BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &probs, const py::array_t<float> &log_probs)
+void BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs)
 {
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
         // Extract single action, probs, and log_probs for this rollout
         int action_idx = action_indices.at(rollout_idx);
 
-        // Create slice views of probs and log_probs
+        // Create slice views of log_probs
         py::slice rollout_slice(rollout_idx, rollout_idx + 1, 1);
-        py::array_t<float> probs_slice = probs[rollout_slice].cast<py::array_t<float>>();
         py::array_t<float> log_probs_slice = log_probs[rollout_slice].cast<py::array_t<float>>();
 
-        rollouts[rollout_idx].move(action_idx, probs_slice, log_probs_slice);
+        rollouts[rollout_idx].move(action_idx, log_probs_slice);
     }
 }
 
 bool BatchRollout::is_done() const
 {
-    return std::all_of(rollouts.begin(), rollouts.end(),
-                       [](const auto &rollout)
-                       { return rollout.engine->state.phase == Phase::kEnd; });
+    bool done = rollouts[0].engine->state.phase == Phase::kEnd;
+
+    assert(std::all_of(rollouts.begin(), rollouts.end(),
+                       [done](const auto &rollout)
+                       { return (rollout.engine->state.phase == Phase::kEnd) == done; }));
+
+    return done;
 }
 
 const RolloutResults &BatchRollout::get_results()
@@ -342,7 +339,6 @@ const RolloutResults &BatchRollout::get_results()
     auto *valid_actions_ptr = static_cast<int8_t *>(results.valid_actions.mutable_data());
     auto *task_idxs_ptr = static_cast<int8_t *>(results.task_idxs.mutable_data());
 
-    auto *probs_ptr = static_cast<float *>(results.probs.mutable_data());
     auto *log_probs_ptr = static_cast<float *>(results.log_probs.mutable_data());
     auto *actions_ptr = static_cast<long *>(results.actions.mutable_data());
     auto *rewards_ptr = static_cast<float *>(results.rewards.mutable_data());
@@ -363,7 +359,6 @@ const RolloutResults &BatchRollout::get_results()
         assert(rollout.turn_pt.size() == seq_length);
         assert(rollout.phase_pt.size() == seq_length);
         assert(rollout.valid_actions_pt.size() == seq_length * hand_pad_size * 2);
-        assert(rollout.probs_pt.size() == seq_length * hand_pad_size);
         assert(rollout.log_probs_pt.size() == seq_length * hand_pad_size);
         assert(rollout.actions_pt.size() == seq_length);
         assert(rollout.rewards_pt.size() == seq_length);
@@ -406,9 +401,6 @@ const RolloutResults &BatchRollout::get_results()
             std::copy(rollout.task_idxs.begin(), rollout.task_idxs.end(), task_idxs_ptr);
             task_idxs_ptr += rollout.max_num_tasks * 2;
         }
-
-        std::copy(rollout.probs_pt.begin(), rollout.probs_pt.end(), probs_ptr);
-        probs_ptr += seq_length * hand_pad_size;
 
         std::copy(rollout.log_probs_pt.begin(), rollout.log_probs_pt.end(), log_probs_ptr);
         log_probs_ptr += seq_length * hand_pad_size;

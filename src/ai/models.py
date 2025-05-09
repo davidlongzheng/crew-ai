@@ -5,7 +5,6 @@ import pandas as pd
 import torch
 from tensordict import TensorDict
 from torch import Tensor, nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from ..game.settings import Settings
 from .aux_info import get_aux_info_spec
@@ -101,10 +100,8 @@ class HistoryModel(nn.Module):
     def forward(
         self,
         hist_inps: TensorDict,
-        seq_lengths: Tensor | None = None,
         tasks_embed: Tensor | None = None,
     ) -> Tensor:
-        assert (seq_lengths is not None) == (len(hist_inps["player_idxs"].shape) == 2)
         player_embed = self.player_embed(hist_inps["player_idxs"])
         trick_embed = self.trick_embed(hist_inps["tricks"])
         card_embed = self.card_embed(hist_inps["cards"])
@@ -142,7 +139,7 @@ class HistoryModel(nn.Module):
             )
             x = self.tformer(
                 x,
-                self.memory.expand(x.size(0), -1, -1),
+                cast(Tensor, self.memory).expand(x.size(0), -1, -1),
                 tgt_mask=tgt_mask,
                 tgt_is_causal=True,
             )
@@ -156,18 +153,12 @@ class HistoryModel(nn.Module):
             if self.layer_norm:
                 x = self.layer_norm(x)
 
-            if seq_lengths is not None:
-                x = pack_padded_sequence(
-                    x, seq_lengths.to("cpu"), enforce_sorted=False, batch_first=True
-                )  # type: ignore
-            elif self.single_step:
+            if self.single_step:
                 x = x.unsqueeze(dim=-2)
 
             x, state = self.lstm(x, self.state)
 
-            if seq_lengths is not None:
-                x, _ = pad_packed_sequence(x, padding_value=0.0, batch_first=True)  # type: ignore
-            elif self.single_step:
+            if self.single_step:
                 x = x.squeeze(dim=-2)
 
             # Only save state if we are using the model one action
@@ -222,7 +213,7 @@ class BackboneModel(nn.Module):
         )
         if self.use_resid:
             assert not self.use_skip
-            self.input_embed = nn.Linear(input_dim, output_dim)
+            self.input_embed: nn.Linear | None = nn.Linear(input_dim, output_dim)
             self.layer_norm = nn.LayerNorm(output_dim) if use_layer_norm else None
             self.mlp = MLP(
                 output_dim,
@@ -264,12 +255,10 @@ class BackboneModel(nn.Module):
         hist_inps: TensorDict,
         private_inps: TensorDict,
         task_idxs: Tensor,
-        seq_lengths: Tensor | None = None,
     ) -> Tensor:
         tasks_embed = self.tasks_embed(task_idxs)
         hist_embed: Tensor = self.hist_model(
             hist_inps=hist_inps,
-            seq_lengths=seq_lengths,
             tasks_embed=(tasks_embed if self.hist_model.use_tasks else None),
         )
         hand_embed: Tensor = self.hand_embed(private_inps["hand"])
@@ -285,7 +274,7 @@ class BackboneModel(nn.Module):
         x = torch.cat(inps, dim=-1)
 
         if self.use_resid:
-            x = self.input_embed(x)
+            x = cast(nn.Linear, self.input_embed)(x)
 
         if self.layer_norm:
             x = self.layer_norm(x)
@@ -393,10 +382,9 @@ class PolicyHead(nn.Module):
         # The nosignal is at the 0th index.
         attn_score[..., 0] += torch.where(signal_phase, no_signal_wgt, 0.0)
 
-        probs = self.softmax(attn_score)
         log_probs = self.log_softmax(attn_score)
 
-        return probs, log_probs
+        return log_probs
 
 
 class ValueHead(nn.Module):
@@ -469,7 +457,7 @@ class PolicyValueModel(nn.Module):
 
     def forward(self, inps):
         backbone_embed = self.backbone_model(
-            inps["hist"], inps["private"], inps["task_idxs"], inps["seq_lengths"]
+            inps["hist"], inps["private"], inps["task_idxs"]
         )
         aux_info_pred = (
             self.aux_info_head(backbone_embed) if self.aux_info_head else None

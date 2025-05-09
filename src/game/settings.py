@@ -121,6 +121,27 @@ class Settings:
         else:
             return cast(int, self.max_num_tasks)
 
+    def to_cpp(self):
+        import cpp_game
+
+        cpp_settings = cpp_game.Settings()
+        cpp_settings.num_players = self.num_players
+        cpp_settings.num_side_suits = self.num_side_suits
+        cpp_settings.use_trump_suit = self.use_trump_suit
+        cpp_settings.side_suit_length = self.side_suit_length
+        cpp_settings.trump_suit_length = self.trump_suit_length
+        cpp_settings.use_signals = self.use_signals
+        cpp_settings.bank = self.bank
+        cpp_settings.task_distro = self.task_distro
+        cpp_settings.task_idxs = self.task_idxs
+        cpp_settings.min_difficulty = self.min_difficulty
+        cpp_settings.max_difficulty = self.max_difficulty
+        cpp_settings.max_num_tasks = self.max_num_tasks
+        cpp_settings.task_bonus = self.task_bonus
+        cpp_settings.win_bonus = self.win_bonus
+
+        return cpp_settings
+
 
 def get_preset(preset):
     if preset == "easy_p3":
