@@ -252,7 +252,7 @@ def do_batch_rollout_cpp(
         engine_seeds = [engine_seeds for _ in range(num_rollouts)]
 
     batch_rollout = cpp_game.BatchRollout(settings, num_rollouts, engine_seeds)
-    # policy_rng = np.random.default_rng(batch_seed)
+    policy_rng = np.random.default_rng(batch_seed)
 
     if pv_model:
         pv_model.eval()
@@ -268,45 +268,44 @@ def do_batch_rollout_cpp(
         if pv_model:
             inps = TensorDict(
                 hist=TensorDict(
-                    player_idxs=move_inps.hist_player_idxs,
-                    tricks=move_inps.hist_tricks,
-                    cards=move_inps.hist_cards,
-                    turns=move_inps.hist_turns,
-                    phases=move_inps.hist_phases,
+                    player_idxs=torch.from_numpy(move_inps.hist_player_idxs),
+                    tricks=torch.from_numpy(move_inps.hist_tricks),
+                    cards=torch.from_numpy(move_inps.hist_cards),
+                    turns=torch.from_numpy(move_inps.hist_turns),
+                    phases=torch.from_numpy(move_inps.hist_phases),
                 ),
                 private=TensorDict(
-                    hand=move_inps.hand,
-                    hands=move_inps.hands,
-                    player_idx=move_inps.player_idx,
-                    trick=move_inps.trick,
-                    turn=move_inps.turn,
-                    phase=move_inps.phase,
+                    hand=torch.from_numpy(move_inps.hand),
+                    hands=torch.from_numpy(move_inps.hands),
+                    player_idx=torch.from_numpy(move_inps.player_idx),
+                    trick=torch.from_numpy(move_inps.trick),
+                    turn=torch.from_numpy(move_inps.turn),
+                    phase=torch.from_numpy(move_inps.phase),
                 ),
-                valid_actions=move_inps.valid_actions,
-                task_idxs=move_inps.task_idxs,
+                valid_actions=torch.from_numpy(move_inps.valid_actions),
+                task_idxs=torch.from_numpy(move_inps.task_idxs),
                 seq_lengths=None,
             )
             inps = inps.to(device)
             with torch.no_grad():
                 (probs_pr, log_probs_pr), _, _ = pv_model(inps)
-                probs_pr = probs_pr.to("cpu")
-                log_probs_pr = log_probs_pr.to("cpu")
+                probs_pr = probs_pr.to("cpu").numpy()
+                log_probs_pr = log_probs_pr.to("cpu").numpy()
         else:
             # Count valid actions (non-negative values) in each row of valid_actions tensor
-            valid_actions = move_inps.valid_actions.to("cpu")
-            num_valid = torch.sum(valid_actions[:, :, 0] >= 0, dim=1)
-            probs_pr = (valid_actions[:, :, 0] >= 0).to(
-                torch.float
-            ) / num_valid.unsqueeze(1)
-            log_probs_pr = torch.log(probs_pr)
+            num_valid = np.sum(move_inps.valid_actions[:, :, 0] >= 0, axis=1)
+            probs_pr = (move_inps.valid_actions[:, :, 0] >= 0).astype(
+                float
+            ) / num_valid[:, None]
+            log_probs_pr = np.log(probs_pr)
 
-        probs_pr /= probs_pr.sum(dim=1).unsqueeze(1)
+        probs_pr /= probs_pr.sum(axis=1, keepdims=True)
         if argmax:
-            action_idxs = torch.argmax(probs_pr, dim=1)
+            action_idxs = np.argmax(probs_pr, axis=1)
         else:
-            # Create a categorical distribution and sample from it
-            m = torch.distributions.Categorical(probs=probs_pr)
-            action_idxs = m.sample()
+            action_idxs = np.array(
+                [policy_rng.choice(len(row), p=row) for row in probs_pr]
+            )
 
         batch_rollout.move(action_idxs, probs_pr, log_probs_pr)
 

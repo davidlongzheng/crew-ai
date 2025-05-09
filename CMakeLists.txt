@@ -7,12 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(Python_EXECUTABLE "/Users/davidzheng/projects/crew-ai/crew-ai/venv/bin/python")
+# set(CMAKE_BUILD_TYPE Debug)
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 
-# Find Python and pybind11
+# Find Python interpreter
+# Needed for pybind11
+set(Python_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/venv/bin/python")
 find_package(Python 3.12 COMPONENTS Interpreter Development REQUIRED)
 
-find_package(pybind11 CONFIG REQUIRED)
+# Add pybind11 subdirectory
+add_subdirectory(src/cpp_game/extern/pybind11)
 
 # Add source files
 set(SOURCES
@@ -32,29 +37,26 @@ set(HEADERS
     src/cpp_game/rollout.h
 )
 
-# Add the C++ library
+# Add the C++ library called "game"
 add_library(game
     ${SOURCES}
     ${HEADERS}
 )
-
-# Add include directories
-target_include_directories(game PUBLIC
+target_include_directories(game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp_game
-    ${TORCH_INCLUDE_DIRS}
 )
+target_link_libraries(game PRIVATE Python::Python)
+target_link_libraries(game PRIVATE pybind11::headers)
 
-# Set compiler flags
-target_compile_options(game PRIVATE -Wall -Wextra -Wpedantic -w)
-
-# Add the Python bindings
+# Add pybind11 module called "cpp_game"
 pybind11_add_module(cpp_game src/cpp_game/bindings.cc)
-target_link_libraries(cpp_game PRIVATE game ${TORCH_LIBRARIES})
+target_link_libraries(cpp_game PRIVATE game)
 
-add_executable(torchtest src/cpp_game/torchtest.cc)
-target_include_directories(torchtest PRIVATE ${TORCH_INCLUDE_DIRS})
-target_link_libraries(torchtest "${TORCH_LIBRARIES}")
-
+# Add test
+add_executable(test_rollout src/cpp_game/test_rollout.cc)
+target_link_libraries(test_rollout PRIVATE Python::Python)
+target_link_libraries(test_rollout PRIVATE pybind11::headers)
+target_link_libraries(test_rollout PRIVATE game)
 
 # Install rules
 install(TARGETS game

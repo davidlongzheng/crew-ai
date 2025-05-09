@@ -88,4 +88,5 @@
         "vector": "cpp",
         "algorithm": "cpp"
     },
+    "cmake.revealLog": "never",
 }

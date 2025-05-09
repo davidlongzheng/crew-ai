@@ -4,6 +4,8 @@ import random
 
 import pytest
 
+import cpp_game
+
 from ..engine import Engine
 from ..settings import Settings
 from ..types import Action, Card
@@ -46,7 +48,7 @@ def test_hand_generation() -> None:
         seed=42,
     )
 
-    rng = random.Random()
+    rng = cpp_game.Rng()
     hands = engine.gen_hands(rng)
 
     # Check basic hand properties

@@ -3,13 +3,13 @@ from dataclasses import replace
 
 import numpy as np
 
+import cpp_game
+
 from ...game.settings import get_preset
 from ..rollout import do_batch_rollout, do_batch_rollout_cpp
 
 
 def test_batch_rollout_cpp():
-    import cpp_game
-
     settings = get_preset("easy_p4")
     settings = replace(settings, use_signals=True)
     cpp_settings = cpp_game.get_preset("easy_p4")
