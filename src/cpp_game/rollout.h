@@ -9,7 +9,7 @@
 #include "engine.h"
 #include "settings.h"
 #include "types.h"
-
+#include "thread_pool.h"
 namespace py = pybind11;
 
 struct MoveInputs
@@ -72,7 +72,7 @@ struct Rollout
     void init_state();
     void reset_state(int engine_seed);
     void record_move_inputs();
-    void move(int action_idx, const py::array_t<float> &log_probs);
+    void move(int action_idx);
     void pop_last_history();
     // state
     const Settings &settings;
@@ -112,12 +112,12 @@ struct Rollout
     void add_card(std::vector<int8_t> &vec, const std::optional<Card> &card);
     void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand);
     void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions);
-    void add_log_probs(std::vector<float> &vec, const py::array_t<float> &log_probs);
+    void add_log_probs(const py::array_t<float> &log_probs);
 };
 
 struct BatchRollout
 {
-    BatchRollout(const Settings &settings, int num_rollouts);
+    BatchRollout(const Settings &settings, int num_rollouts, bool multithread = false);
     void reset_state(const std::vector<int> &engine_seeds);
 
     const MoveInputs &get_move_inputs();
@@ -135,4 +135,6 @@ struct BatchRollout
 
     MoveInputs move_inputs;
     RolloutResults results;
+
+    std::unique_ptr<ThreadPool> pool;
 };

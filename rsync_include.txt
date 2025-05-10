@@ -1,2 +1,5 @@
 src/
 requirements.txt
+build.sh
+CMakeLists.txt
+venv/lib/python3.12/site-packages/app.pth

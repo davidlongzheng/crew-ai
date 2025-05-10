@@ -11,7 +11,6 @@
 template <typename T>
 void print_tensor_info(const std::string &name, const py::array_t<T> &tensor)
 {
-    auto r = tensor.unchecked();
     std::cout << name << " shape: (";
     for (size_t i = 0; i < tensor.ndim(); ++i)
     {
@@ -83,15 +82,11 @@ void test_single_rollout()
         rollout.record_move_inputs();
         assert(!rollout.valid_actions.empty());
 
-        // Create random probabilities for the actions
-        py::array_t<float> probs = create_random_probs(rollout.valid_actions.size());
-        py::array_t<float> log_probs = probs_to_log_probs(probs);
-
         // Choose first valid action (for simplicity)
         int action_idx = 0;
 
         // Make the move
-        rollout.move(action_idx, log_probs);
+        rollout.move(action_idx);
 
         move_count++;
     }

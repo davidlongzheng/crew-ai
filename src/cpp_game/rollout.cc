@@ -159,10 +159,10 @@ void Rollout::add_valid_actions(std::vector<int8_t> &vec, const std::vector<Acti
     }
 }
 
-void Rollout::add_log_probs(std::vector<float> &vec, const py::array_t<float> &log_probs)
+void Rollout::add_log_probs(const py::array_t<float> &log_probs)
 {
     auto buffer = log_probs.data();
-    vec.insert(vec.end(), buffer, buffer + log_probs.size());
+    log_probs_pt.insert(log_probs_pt.end(), buffer, buffer + log_probs.size());
 }
 
 void Rollout::record_move_inputs()
@@ -182,7 +182,7 @@ void Rollout::record_move_inputs()
     add_valid_actions(valid_actions_pt, valid_actions);
 }
 
-void Rollout::move(int action_idx, const py::array_t<float> &log_probs)
+void Rollout::move(int action_idx)
 {
     if (engine->state.phase == Phase::kEnd)
     {
@@ -194,7 +194,6 @@ void Rollout::move(int action_idx, const py::array_t<float> &log_probs)
 
     // Record the action and its probability
     actions_pt.push_back(action_idx);
-    add_log_probs(log_probs_pt, log_probs);
 
     // Record public history
     hist_player_idxs_pt.push_back(engine->state.get_player_idx());
@@ -217,9 +216,14 @@ void Rollout::pop_last_history()
     hist_phases_pt.pop_back();
 }
 
-BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_)
+BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, bool multithread)
     : settings(settings_), num_rollouts(num_rollouts_), seq_length(settings.get_seq_length()), hand_pad_size(settings.max_hand_size() + 1), max_num_tasks(settings.get_max_num_tasks()), move_inputs(num_rollouts, hand_pad_size, max_num_tasks), results(num_rollouts, seq_length, hand_pad_size, max_num_tasks)
 {
+    if (multithread)
+    {
+        pool = std::make_unique<ThreadPool>(std::thread::hardware_concurrency());
+    }
+
     for (int i = 0; i < num_rollouts; ++i)
     {
         rollouts.emplace_back(settings);
@@ -252,12 +256,30 @@ const MoveInputs &BatchRollout::get_move_inputs()
     auto *valid_actions_ptr = static_cast<int8_t *>(move_inputs.valid_actions.mutable_data());
     auto *task_idxs_ptr = static_cast<int8_t *>(move_inputs.task_idxs.mutable_data());
 
+    if (pool)
+    {
+        std::vector<std::function<void()>> tasks;
+        for (auto &rollout : rollouts)
+        {
+            tasks.push_back(
+                [&rollout]
+                {
+                    rollout.record_move_inputs();
+                });
+        }
+        parallel_exec(*pool, tasks);
+    }
+
     // Collect arrays from each rollout
     for (auto &rollout : rollouts)
     {
         // Update the rollout's arrays if game is not over
         assert(rollout.engine->state.phase != Phase::kEnd);
-        rollout.record_move_inputs();
+
+        if (!pool)
+        {
+            rollout.record_move_inputs();
+        }
 
         *hist_player_idxs_ptr = rollout.hist_player_idxs_pt.back();
         hist_player_idxs_ptr++;
@@ -293,16 +315,37 @@ const MoveInputs &BatchRollout::get_move_inputs()
 
 void BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs)
 {
+    auto action_indices_r = action_indices.unchecked<1>();
+    if (pool)
+    {
+        std::vector<std::function<void()>> tasks;
+        for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
+        {
+            int action_idx = action_indices_r(rollout_idx);
+            auto &rollout = rollouts[rollout_idx];
+            tasks.push_back(
+                [&, action_idx]
+                {
+                    rollout.move(action_idx);
+                });
+        }
+        parallel_exec(*pool, tasks);
+    }
+
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
-        // Extract single action, probs, and log_probs for this rollout
-        int action_idx = action_indices.at(rollout_idx);
+        auto &rollout = rollouts[rollout_idx];
+
+        if (!pool)
+        {
+            int action_idx = action_indices_r(rollout_idx);
+            rollout.move(action_idx);
+        }
 
         // Create slice views of log_probs
         py::slice rollout_slice(rollout_idx, rollout_idx + 1, 1);
         py::array_t<float> log_probs_slice = log_probs[rollout_slice].cast<py::array_t<float>>();
-
-        rollouts[rollout_idx].move(action_idx, log_probs_slice);
+        rollout.add_log_probs(log_probs_slice);
     }
 }
 

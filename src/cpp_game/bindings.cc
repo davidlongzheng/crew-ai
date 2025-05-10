@@ -319,12 +319,12 @@ PYBIND11_MODULE(cpp_game, m)
         .def("reset_state", &Rollout::reset_state,
              py::arg("engine_seed"))
         .def("move", &Rollout::move,
-             py::arg("action_idx"), py::arg("log_probs"));
+             py::arg("action_idx"));
 
     // Bind BatchRollout class
     py::class_<BatchRollout>(m, "BatchRollout")
-        .def(py::init<const Settings &, int>(),
-             py::arg("settings"), py::arg("num_rollouts"))
+        .def(py::init<const Settings &, int, bool>(),
+             py::arg("settings"), py::arg("num_rollouts"), py::arg("multithread") = false)
         .def_readonly("num_rollouts", &BatchRollout::num_rollouts)
         .def("reset_state", &BatchRollout::reset_state,
              py::arg("engine_seeds"))

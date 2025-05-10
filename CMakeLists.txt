@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # sanitize build
 # set(CMAKE_BUILD_TYPE Debug)
@@ -13,8 +14,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 
 # perf build
-set(CMAKE_BUILD_TYPE Debug)
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")  
+# set(CMAKE_BUILD_TYPE Debug)
+# set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")  
 
 # Find Python interpreter
 # Needed for pybind11
@@ -29,6 +30,7 @@ set(SOURCES
     src/cpp_game/engine.cc
     src/cpp_game/tasks.cc
     src/cpp_game/rollout.cc
+    src/cpp_game/thread_pool.cc
 )
 
 # Add header files
@@ -40,6 +42,7 @@ set(HEADERS
     src/cpp_game/types.h
     src/cpp_game/utils.h
     src/cpp_game/rollout.h
+    src/cpp_game/thread_pool.h
 )
 
 # Add the C++ library called "game"

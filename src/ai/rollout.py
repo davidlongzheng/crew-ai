@@ -1,4 +1,7 @@
 import random
+import time
+from contextlib import nullcontext
+from typing import cast
 
 import numpy as np
 import torch
@@ -224,6 +227,25 @@ def do_batch_rollout(
     return ret
 
 
+class SimpleTimer:
+    def __init__(self) -> None:
+        self.total_time: float = 0.0
+        self.start_time: float | None = None
+
+    def __enter__(self) -> "SimpleTimer":
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self.start_time is not None:
+            self.total_time += time.time() - self.start_time
+            self.start_time = None
+
+    def reset(self) -> None:
+        self.total_time = 0.0
+        self.start_time = None
+
+
 def do_batch_rollout_cpp(
     batch_rollout: cpp_game.BatchRollout,
     batch_seed: int | None = None,
@@ -231,6 +253,7 @@ def do_batch_rollout_cpp(
     pv_model: PolicyValueModel | None = None,
     device: torch.device | None = None,
     argmax: bool = False,
+    record_cpp_time: bool = False,
 ) -> TensorDict:
     """Does a roll out of one game and returns all the necessary
     inputs/actions/rewards to do training.
@@ -256,8 +279,11 @@ def do_batch_rollout_cpp(
         pv_model.eval()
         pv_model.start_single_step()
 
+    cpp_timer = SimpleTimer() if record_cpp_time else nullcontext()
+
     while not batch_rollout.is_done():
-        move_inps = batch_rollout.get_move_inputs()
+        with cpp_timer:
+            move_inps = batch_rollout.get_move_inputs()
 
         # Purposefully create dummy entries for finished
         # samples so that the hidden state of the policy model is
@@ -304,12 +330,14 @@ def do_batch_rollout_cpp(
                 [policy_rng.choice(len(row), p=row) for row in probs_pr]
             )
 
-        batch_rollout.move(action_idxs, log_probs_pr)
+        with cpp_timer:
+            batch_rollout.move(action_idxs, log_probs_pr)
 
     if pv_model:
         pv_model.stop_single_step()
 
-    results = batch_rollout.get_results()
+    with cpp_timer:
+        results = batch_rollout.get_results()
     ret = TensorDict(
         inps=TensorDict(
             hist=TensorDict(
@@ -337,5 +365,8 @@ def do_batch_rollout_cpp(
     )
     ret = ret.to(device)
     ret.auto_batch_size_()
+
+    if record_cpp_time:
+        print(f"C++ time: {cast(SimpleTimer, cpp_timer).total_time:.3f}s")
 
     return ret

@@ -11,9 +11,14 @@ from ..lib.utils import coerce_string
 @dataclass(frozen=True, kw_only=True)
 class Hyperparams:
     float_dtype: torch.dtype = torch.float32
+    use_mixed_precision: bool = False
+    # Use torch.profile
+    use_profile: bool = False
+    # Profile memory at key points.
+    profile_memory: bool = False
 
     # Each round is a single iteration of PPO clip.
-    num_rounds: int = 30
+    num_rounds: int = 100
     # Each epoch goes through all the trajectories of a given round.
     num_epochs_per_round: int = 3
     # Number of trajectories in an epoch.
@@ -102,8 +107,6 @@ class Hyperparams:
     # Only use historical aux info values.
     aux_info_hist_only: bool = False
 
-    use_profile: bool = False
-
 
 class HyperparamsType(click.ParamType):
     name = "Hyperparams"
@@ -121,7 +124,6 @@ class HyperparamsType(click.ParamType):
             ("dropout", r"^.*dropout$"),
             ("use_layer_norm", r"^.*use_layer_norm$"),
             ("agg_method", r"^.*agg_method$"),
-            ("num_epochs_per_round", r"^.*num_epochs_per_round$"),
         ]:
             if batch_alias not in kwargs:
                 continue

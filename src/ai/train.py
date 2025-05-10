@@ -31,6 +31,13 @@ from .summary_writer import CustomSummaryWriter
 from .win_cache import CANON_WIN_CACHE_DIR, load_cache
 
 
+def print_memory_usage(key):
+    device = torch.device(0)
+    alloc = torch.cuda.memory_allocated(device) / 1e6
+    reserved = torch.cuda.memory_reserved(device) / 1e6
+    logger.info(f"Memory Usage ({key}): alloc={alloc:.2f}MB reserved={reserved:.2f}MB")
+
+
 def num_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -127,11 +134,18 @@ def compute_advantage(
     gae_lambda: float,
     pv_model: PolicyValueModel,
     device: torch.device,
+    hp: Hyperparams,
 ):
+    N, T = td["inps", "hist", "player_idxs"].shape
     with torch.no_grad():
-        _, td["orig_values"], _ = pv_model(td["inps"])
+        batch_size = hp.batch_size * 4
+        values = torch.empty(N, T, device=device)
 
-    values = td["orig_values"]
+        for i in range(0, N, batch_size):
+            _, batch_values, _ = pv_model(td["inps"][i : i + batch_size])
+            values[i : i + batch_size] = batch_values
+
+    td["orig_values"] = values
     T = values.shape[-1]
     fut_values = torch.roll(values, shifts=-1, dims=-1)
     fut_values[..., -1] = 0.0
@@ -375,7 +389,7 @@ def train_one_epoch(
                 if scaler
                 else [ProfilerActivity.CPU]
             ),
-            schedule=torch.profiler.schedule(wait=2, warmup=2, active=5, repeat=3),
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(str(outdir)),
             record_shapes=True,
             with_stack=True,
@@ -452,8 +466,9 @@ def train_one_epoch(
             num_steps_in_epoch += 1
 
     if prof:
-        print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=40))
-        print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=40))
+        for k in ["self_cpu_time_total", "self_cuda_time_total"]:
+            print(f"By {k}")
+            print(prof.key_averages().table(sort_by=k, row_limit=10))
 
     losses = {k: v / num_steps_in_epoch for k, v in running_losses.items()}
 
@@ -607,12 +622,16 @@ def train(
     aux_info_spec = get_aux_info_spec(settings)
     cpp_settings = settings.to_cpp()
     batch_rollout = cpp_game.BatchRollout(
-        cpp_settings, hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round
+        cpp_settings,
+        hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
     )
 
     for round in range(start_round, hp.num_rounds):
         logger.info(f"Round {round}")
         pv_model.eval()
+
+        if hp.profile_memory:
+            print_memory_usage("before rollout")
 
         timer.start("rollout")
         seed = int(torch.randint(0, 100_000_000, ()))
@@ -624,6 +643,9 @@ def train(
             device=device,
         )
         timer.finish("rollout", round)
+
+        if hp.profile_memory:
+            print_memory_usage("after rollout")
 
         mean_reward = td["rewards"].sum(dim=-1).mean()
         writer.add_scalar("rewards/reward_mean", mean_reward, round)
@@ -648,11 +670,14 @@ def train(
         )
 
         timer.start("advantage")
-        compute_advantage(td, hp.gae_lambda, pv_model, device)
+        compute_advantage(td, hp.gae_lambda, pv_model, device, hp)
         for k in ["orig_value", "value_target", "unnorm_advantage"]:
             writer.add_scalar(f"rewards/{k}_mean", td[f"{k}s"].mean(), round)
             writer.add_scalar(f"rewards/{k}_std", td[f"{k}s"].std(), round)
         timer.finish("advantage", round)
+
+        if hp.profile_memory:
+            print_memory_usage("after advantage")
 
         timer.start("training")
         train_one_round(
@@ -670,6 +695,10 @@ def train(
             scaler=scaler,
         )
         timer.finish("training", round)
+
+        if hp.profile_memory:
+            print_memory_usage("after train")
+            return
 
         torch.save(
             {
@@ -807,6 +836,9 @@ def main(
         torch.set_default_dtype(hp.float_dtype)
         torch.manual_seed(seed)
 
+        if hp.profile_memory:
+            print_memory_usage("before create models")
+
         logger.info("** Creating models, optimizer **")
         if hp.aux_info_hist_only:
             set_aux_info_hist_only(True)
@@ -817,7 +849,9 @@ def main(
         pv_model = cast(PolicyValueModel, models["pv"])
         optim = create_optim([pv_model], hp)
         lr_sched = create_lr_sched(optim, hp)
-        scaler = GradScaler() if device.type == "cuda" else None
+        scaler = (
+            GradScaler() if device.type == "cuda" and hp.use_mixed_precision else None
+        )
         for obj, key in [
             (pv_model, "pv_model"),
             (optim, "optim"),
