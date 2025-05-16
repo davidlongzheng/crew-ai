@@ -243,20 +243,6 @@ int Engine::calc_trick_winner(
     return max_it->second;
 }
 
-void Engine::skip_to_next_unsignaled()
-{
-    while (state.cur_player != state.leader &&
-           state.signals[state.cur_player].has_value())
-    {
-        state.cur_player = state.get_next_player();
-    }
-
-    if (state.cur_player == state.leader)
-    {
-        state.phase = Phase::kPlay;
-    }
-}
-
 double Engine::move(const Action &action)
 {
     if (state.phase == Phase::kSignal)
@@ -264,7 +250,7 @@ double Engine::move(const Action &action)
         assert(settings.use_signals);
         assert(action.player == state.cur_player);
         auto &player_hand = state.hands[state.cur_player];
-        assert(action.type == ActionType::kSignal || action.type == ActionType::kNoSignal);
+        assert(action.type == ActionType::kSignal || (!settings.single_signal && action.type == ActionType::kNoSignal));
 
         if (action.type == ActionType::kSignal)
         {
@@ -378,7 +364,7 @@ double Engine::move(const Action &action)
             state.cur_player = trick_winner;
             state.active_cards.clear();
 
-            if (settings.use_signals)
+            if (settings.use_signals && !settings.single_signal)
             {
                 state.phase = Phase::kSignal;
             }
@@ -492,7 +478,11 @@ std::vector<Action> Engine::valid_actions() const
         assert(settings.use_signals);
 
         std::vector<Action> ret;
-        ret.push_back({state.cur_player, ActionType::kNoSignal, std::nullopt});
+
+        if (!settings.single_signal)
+        {
+            ret.push_back({state.cur_player, ActionType::kNoSignal, std::nullopt});
+        }
 
         if (state.signals[state.cur_player].has_value())
         {

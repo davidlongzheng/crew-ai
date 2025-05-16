@@ -23,10 +23,10 @@ def featurize(
 
     assert 0 <= non_feature_dims <= 2
 
-    def mapper(func, inp):
-        if non_feature_dims == 0:
+    def mapper(func, inp, _non_feature_dims=non_feature_dims):
+        if _non_feature_dims == 0:
             ret = func(inp)
-        elif non_feature_dims == 1:
+        elif _non_feature_dims == 1:
             ret = [func(x) for x in inp]
         else:
             ret = [[func(y) for y in x] for x in inp]
@@ -72,7 +72,15 @@ def featurize(
     def pad_tasks(x):
         return x + [(-1, -1)] * (settings.get_max_num_tasks() - len(x))
 
-    task_idxs_arr = torch.tensor(mapper(pad_tasks, task_idxs), dtype=torch.int8)
+    # task_idxs doesn't vary across time.
+    task_idxs_arr = torch.tensor(
+        mapper(
+            pad_tasks,
+            task_idxs,
+            _non_feature_dims=(1 if non_feature_dims == 2 else non_feature_dims),
+        ),
+        dtype=torch.int8,
+    )
 
     return TensorDict(
         hist=TensorDict(

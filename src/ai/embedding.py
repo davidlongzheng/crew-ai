@@ -100,17 +100,34 @@ class PaddedEmbed(nn.Module):
 class CardModel(nn.Module):
     def __init__(
         self,
-        max_suit_length: int,
-        num_suits: int,
+        settings: Settings,
         output_dim: int,
         dropout: float,
         use_pos: bool,
+        use_sep_trump_rank: bool,
     ):
         super().__init__()
-        self.max_suit_length = max_suit_length
-        self.num_suits = num_suits
+
+        # If use_sep_trump_rank, let's make sure that the trump ranks
+        # come after the side suit ranks and the nosignal rank.
+        self.use_sep_trump_rank = use_sep_trump_rank and settings.use_trump_suit
+        if self.use_sep_trump_rank:
+            self.trump_suit = settings.num_side_suits
+            self.trump_suit_delta = settings.side_suit_length + settings.use_nosignal
+
+        num_ranks = settings.side_suit_length
+        if settings.use_trump_suit:
+            if use_sep_trump_rank:
+                num_ranks += settings.trump_suit_length
+            else:
+                num_ranks = max(settings.side_suit_length, settings.trump_suit_length)
+        num_ranks += settings.use_nosignal  # to handle nosignal
+
+        # +1 to handle nosignal
+        num_suits = settings.num_suits + settings.use_nosignal
+
         self.rank_embed = PaddedEmbed(
-            max_suit_length,
+            num_ranks,
             output_dim,
             dropout,
             embed_type="pos" if use_pos else "embed",
@@ -122,7 +139,15 @@ class CardModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] == 2
-        x = self.rank_embed(x[..., 0]) + self.suit_embed(x[..., 1])
+        rank = x[..., 0]
+        suit = x[..., 1]
+
+        if self.use_sep_trump_rank:
+            rank = torch.where(
+                suit == self.trump_suit, rank + self.trump_suit_delta, rank
+            )
+
+        x = self.rank_embed(rank) + self.suit_embed(suit)
         return x
 
 
@@ -231,13 +256,12 @@ def get_embed_models(
         hp.embed_dropout,
         embed_type="embed",
     )
-    # +1 to handle nosignal case.
     card_model = CardModel(
-        settings.max_suit_length + 1,
-        settings.num_suits + 1,
+        settings,
         hp.embed_dim,
         hp.embed_dropout,
         hp.embed_use_pos,
+        hp.embed_sep_trump_rank,
     )
     hand_model = HandModel(
         hp.hand_embed_dim,
@@ -287,6 +311,22 @@ def get_embed_models(
             embed_type="embed",
         ),
     }
+
+    if hp.hist_use_phase_mask:
+        ret["hist_phase_mask"] = PaddedEmbed(
+            settings.num_phases,
+            card_model.output_dim,
+            dropout=0.0,
+            embed_type="embed",
+        )
+
+    if hp.policy_use_phase_action_mask:
+        ret["phase_action_mask"] = PaddedEmbed(
+            settings.num_phases,
+            hp.policy_query_dim,
+            dropout=0.0,
+            embed_type="embed",
+        )
 
     ret["hand"] = hand_model
 

@@ -155,22 +155,14 @@ class Engine:
         )
         return winner
 
-    def skip_to_next_unsignaled(self) -> None:
-        while (
-            self.state.cur_player != self.state.leader
-            and self.state.signals[self.state.cur_player] is not None
-        ):
-            self.state.cur_player = self.state.get_next_player()
-
-        if self.state.cur_player == self.state.leader:
-            self.state.phase = "play"
-
     def move(self, action: Action) -> float:
         if self.state.phase == "signal":
             assert self.settings.use_signals
             assert action.player == self.state.cur_player
             player_hand = self.state.hands[self.state.cur_player]
-            assert action.type in ["signal", "nosignal"], action.type
+            assert action.type == "signal" or (
+                not self.settings.single_signal and action.type == "nosignal"
+            ), action.type
 
             if action.type == "signal":
                 assert action.card in player_hand, (action.card, player_hand)
@@ -232,7 +224,7 @@ class Engine:
                 self.state.leader = trick_winner
                 self.state.cur_player = trick_winner
                 self.state.active_cards = []
-                if self.settings.use_signals:
+                if self.settings.use_signals and not self.settings.single_signal:
                     self.state.phase = "signal"
             else:
                 self.state.cur_player = self.state.get_next_player()
@@ -293,9 +285,11 @@ class Engine:
     def valid_actions(self) -> list[Action]:
         if self.state.phase == "signal":
             assert self.settings.use_signals
-            ret: list[Action] = [
-                Action(player=self.state.cur_player, type="nosignal", card=None)
-            ]
+            ret: list[Action] = []
+            if not self.settings.single_signal:
+                ret.append(
+                    Action(player=self.state.cur_player, type="nosignal", card=None)
+                )
             if self.state.signals[self.state.cur_player] is not None:
                 return ret
             player_hand = [

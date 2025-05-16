@@ -2,12 +2,15 @@ from __future__ import absolute_import, annotations
 
 import dataclasses
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Literal, cast
 
 import click
 
 from ..lib.utils import coerce_string
 from .types import TRUMP_SUIT_NUM
+
+DEFAULT_PRESET = "easy_p4"
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,7 @@ class Settings:
     side_suit_length: int = 9
     trump_suit_length: int = 4
     use_signals: bool = True
+    single_signal: bool = False
 
     bank: str = "easy"
     # In fixed, tasks are distributed according to the order of tasks,
@@ -56,20 +60,20 @@ class Settings:
         if self.min_difficulty is not None:
             assert self.min_difficulty < self.max_difficulty
 
-    @property
-    def num_tricks(self):
+    @cached_property
+    def num_cards(self):
         return (
             self.num_side_suits * self.side_suit_length
             + self.use_trump_suit * self.trump_suit_length
-        ) // self.num_players
+        )
 
-    @property
+    @cached_property
+    def num_tricks(self):
+        return self.num_cards // self.num_players
+
+    @cached_property
     def max_hand_size(self):
-        return (
-            self.num_side_suits * self.side_suit_length
-            + self.use_trump_suit * self.trump_suit_length
-            - 1
-        ) // self.num_players + 1
+        return (self.num_cards - 1) // self.num_players + 1
 
     def get_suit_idx(self, suit):
         if suit < self.num_side_suits:
@@ -101,17 +105,21 @@ class Settings:
         else:
             assert False
 
-    @property
+    @cached_property
+    def use_nosignal(self):
+        return self.use_signals and not self.single_signal
+
+    @cached_property
     def max_suit_length(self):
         return max(
             self.side_suit_length, self.trump_suit_length if self.use_trump_suit else 0
         )
 
-    @property
+    @cached_property
     def num_suits(self):
         return self.num_side_suits + self.use_trump_suit
 
-    @property
+    @cached_property
     def num_phases(self):
         return 1 + self.use_signals
 
@@ -120,6 +128,12 @@ class Settings:
             return sum(x is not None for x in self.task_idxs)
         else:
             return cast(int, self.max_num_tasks)
+
+    def get_seq_length(self) -> int:
+        return self.num_players * (
+            self.num_tricks * (2 if self.use_signals and not self.single_signal else 1)
+            + self.single_signal
+        )
 
     def to_cpp(self):
         import cpp_game
@@ -131,6 +145,7 @@ class Settings:
         cpp_settings.side_suit_length = self.side_suit_length
         cpp_settings.trump_suit_length = self.trump_suit_length
         cpp_settings.use_signals = self.use_signals
+        cpp_settings.single_signal = self.single_signal
         cpp_settings.bank = self.bank
         cpp_settings.task_distro = self.task_distro
         cpp_settings.task_idxs = self.task_idxs
@@ -183,7 +198,7 @@ class SettingsType(click.ParamType):
         for k, v in kwargs.items():
             kwargs[k] = coerce_string(v)
 
-        preset = get_preset(kwargs.pop("preset", "easy_p3"))
+        preset = get_preset(kwargs.pop("preset", DEFAULT_PRESET))
         return dataclasses.replace(preset, **kwargs)
 
 

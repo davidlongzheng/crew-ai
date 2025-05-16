@@ -37,7 +37,7 @@ struct MoveInputs
 
 struct RolloutResults
 {
-    RolloutResults(int num_rollouts, int seq_length, int hand_pad_size, int max_num_tasks);
+    RolloutResults(int num_rollouts, int seq_length, int hand_pad_size, int max_num_tasks, int num_cards);
 
     // History tensors
     py::array_t<int8_t> hist_player_idxs;
@@ -63,6 +63,9 @@ struct RolloutResults
     py::array_t<float> rewards;
     py::array_t<float> frac_success;
     py::array_t<bool> win;
+
+    // Aux info
+    py::array_t<int8_t> aux_info;
 };
 
 struct Rollout
@@ -107,8 +110,12 @@ struct Rollout
     std::vector<long> actions_pt;
     std::vector<float> rewards_pt;
 
+    // aux info
+    std::vector<int8_t> aux_info;
+
     // Helper functions
     void encode_tasks();
+    void encode_aux_info();
     void add_card(std::vector<int8_t> &vec, const std::optional<Card> &card);
     void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand);
     void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions);

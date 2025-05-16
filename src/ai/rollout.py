@@ -11,11 +11,11 @@ import cpp_game
 
 from ..game.engine import Engine
 from ..game.settings import Settings
-from ..game.types import Card
+from ..game.utils import card_to_tuple, encode_hand
 from ..lib.types import StrMap, TaskIdxs
+from .actor import BatchActor
 from .aux_info import AuxInfoTracker
 from .featurizer import featurize
-from .models import PolicyValueModel
 
 
 def do_batch_rollout(
@@ -23,7 +23,7 @@ def do_batch_rollout(
     num_rollouts: int,
     batch_seed: int | None = None,
     engine_seeds: int | list[int] | None = None,
-    pv_model: PolicyValueModel | None = None,
+    actor: BatchActor | None = None,
     device: torch.device | None = None,
     argmax: bool = False,
 ) -> list[StrMap]:
@@ -51,8 +51,6 @@ def do_batch_rollout(
     actions_pr_pt: list[list[int]] = [[] for _ in range(num_rollouts)]
     rewards_pr_pt: list[list[float]] = [[] for _ in range(num_rollouts)]
     task_idxs_pr: list[TaskIdxs] = [[] for _ in range(num_rollouts)]
-    # Literally just duplicates of task_idxs_pr
-    task_idxs_pr_pt: list[list[TaskIdxs]] = [[] for _ in range(num_rollouts)]
     aux_tracker_pr: list[AuxInfoTracker] = [
         AuxInfoTracker(settings, engine) for engine in engines
     ]
@@ -63,17 +61,8 @@ def do_batch_rollout(
             player_idx = engine.state.get_player_idx(player)
             task_idxs_pr[rollout_idx] += [(task.task_idx, player_idx) for task in tasks]
 
-    if pv_model:
-        pv_model.eval()
-        pv_model.start_single_step()
-
-    def card_to_tuple(x: Card | None):
-        if x is None:
-            return (settings.max_suit_length, settings.num_suits)
-        return (x.rank - 1, settings.get_suit_idx(x.suit))
-
-    def encode_hand(hand: list[Card]):
-        return [card_to_tuple(x) for x in hand]
+    if actor:
+        actor.start()
 
     while any(engine.state.phase != "end" for engine in engines):
         # Before running policy model
@@ -86,7 +75,9 @@ def do_batch_rollout(
             assert engine.state.phase in ["play", "signal"]
             private_inputs_pr_pt[rollout_idx].append(
                 {
-                    "hand": encode_hand(engine.state.hands[engine.state.cur_player]),
+                    "hand": encode_hand(
+                        engine.state.hands[engine.state.cur_player], settings
+                    ),
                     "trick": engine.state.trick,
                     "player_idx": player_idx,
                     "turn": turn,
@@ -105,28 +96,25 @@ def do_batch_rollout(
                     for x in valid_actions
                 )
             valid_actions_pr_pt[rollout_idx].append(
-                [card_to_tuple(x.card) for x in valid_actions]
+                [card_to_tuple(x.card, settings) for x in valid_actions]
             )
-            task_idxs_pr_pt[rollout_idx].append(task_idxs_pr[rollout_idx])
             aux_tracker_pr[rollout_idx].on_decision()
 
         # Purposefully create dummy entries for finished
         # samples so that the hidden state of the policy model is
         # nice and aligned.
         # The entries are discarded later.
-        if pv_model:
+        if actor:
             inps = featurize(
                 [x[-1] for x in public_history_pr_pt],
                 [x[-1] for x in private_inputs_pr_pt],
                 [x[-1] for x in valid_actions_pr_pt],
-                [x[-1] for x in task_idxs_pr_pt],
+                task_idxs_pr,
                 settings,
                 non_feature_dims=1,
                 device=device,
             )
-            with torch.no_grad():
-                log_probs_pr, _, _ = pv_model(inps)
-                log_probs_pr = log_probs_pr.to("cpu").numpy()
+            log_probs_pr = actor.get_log_probs(inps)
         else:
             log_probs_pr = [
                 np.array(
@@ -160,7 +148,7 @@ def do_batch_rollout(
             public_history_pr_pt[rollout_idx].append(
                 {
                     "trick": engine.state.trick,
-                    "card": card_to_tuple(action.card),
+                    "card": card_to_tuple(action.card, settings),
                     "player_idx": player_idx,
                     "turn": turn,
                     "phase": engine.state.phase_idx,
@@ -170,8 +158,8 @@ def do_batch_rollout(
             rewards_pr_pt[rollout_idx].append(reward)
             aux_tracker_pr[rollout_idx].on_move(action)
 
-    if pv_model:
-        pv_model.stop_single_step()
+    if actor:
+        actor.stop()
 
     ret: list[StrMap] = []
     for rollout_idx, engine in enumerate(engines):
@@ -180,8 +168,8 @@ def do_batch_rollout(
         private_inputs_pt = private_inputs_pr_pt[rollout_idx]
         actions_pt = actions_pr_pt[rollout_idx]
         log_probs_pt = log_probs_pr_pt[rollout_idx]
-        task_idxs_pt = task_idxs_pr_pt[rollout_idx]
         rewards_pt = rewards_pr_pt[rollout_idx]
+        task_idxs = task_idxs_pr[rollout_idx]
 
         public_history_pt.pop()
         assert (
@@ -190,7 +178,6 @@ def do_batch_rollout(
             == len(private_inputs_pt)
             == len(actions_pt)
             == len(log_probs_pt)
-            == len(task_idxs_pt)
             == len(rewards_pt)
         )
 
@@ -218,7 +205,7 @@ def do_batch_rollout(
                 "actions": actions_pt,
                 "rewards": rewards_pt,
                 "num_success_tasks_pp": num_success_tasks_pp,
-                "task_idxs": task_idxs_pt,
+                "task_idxs": task_idxs,
                 "aux_infos": aux_info_pt,
                 "win": win,
             }
@@ -250,7 +237,7 @@ def do_batch_rollout_cpp(
     batch_rollout: cpp_game.BatchRollout,
     batch_seed: int | None = None,
     engine_seeds: int | list[int] | None = None,
-    pv_model: PolicyValueModel | None = None,
+    actor: BatchActor | None = None,
     device: torch.device | None = None,
     argmax: bool = False,
     record_cpp_time: bool = False,
@@ -275,9 +262,8 @@ def do_batch_rollout_cpp(
     batch_rollout.reset_state(engine_seeds)
     policy_rng = np.random.default_rng(batch_seed)
 
-    if pv_model:
-        pv_model.eval()
-        pv_model.start_single_step()
+    if actor:
+        actor.start()
 
     cpp_timer = SimpleTimer() if record_cpp_time else nullcontext()
 
@@ -289,7 +275,7 @@ def do_batch_rollout_cpp(
         # samples so that the hidden state of the policy model is
         # nice and aligned.
         # The entries are discarded later.
-        if pv_model:
+        if actor:
             inps = TensorDict(
                 hist=TensorDict(
                     player_idxs=move_inps.hist_player_idxs,
@@ -309,9 +295,7 @@ def do_batch_rollout_cpp(
                 task_idxs=move_inps.task_idxs,
             )
             inps = inps.to(device)
-            with torch.no_grad():
-                log_probs_pr, _, _ = pv_model(inps)
-                log_probs_pr = log_probs_pr.to("cpu").numpy()
+            log_probs_pr = actor.get_log_probs(inps)
         else:
             valid_moves = move_inps.valid_actions[:, :, 0] >= 0
             num_valid = np.sum(valid_moves, axis=1, keepdims=True)
@@ -333,8 +317,8 @@ def do_batch_rollout_cpp(
         with cpp_timer:
             batch_rollout.move(action_idxs, log_probs_pr)
 
-    if pv_model:
-        pv_model.stop_single_step()
+    if actor:
+        actor.stop()
 
     with cpp_timer:
         results = batch_rollout.get_results()
@@ -362,6 +346,7 @@ def do_batch_rollout_cpp(
         rewards=results.rewards,
         frac_success=results.frac_success,
         win=results.win,
+        aux_info=results.aux_info,
     )
     ret = ret.to(device)
     ret.auto_batch_size_()

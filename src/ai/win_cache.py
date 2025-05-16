@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from src.ai.rollout import do_batch_rollout
 
-from ..game.settings import SETTINGS_TYPE, Settings, get_preset
+from ..game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
 
 CANON_WIN_CACHE_DIR = Path(__file__).parent.parent.parent / "win_cache"
 
@@ -110,7 +110,7 @@ def run(settings, num_seeds, num_rollouts_per_seed, num_workers):
 @click.option(
     "--settings",
     type=SETTINGS_TYPE,
-    default=get_preset("easy_p3"),
+    default=get_preset(DEFAULT_PRESET),
     help="Settings",
 )
 @click.option(

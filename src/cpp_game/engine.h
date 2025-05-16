@@ -37,9 +37,6 @@ struct Engine
     int calc_trick_winner(
         const std::vector<std::pair<Card, int>> &active_cards) const;
 
-    // Skips to the next player who hasn't signaled yet.
-    void skip_to_next_unsignaled();
-
     // Makes a move with the given action and returns the reward.
     double move(const Action &action);
 

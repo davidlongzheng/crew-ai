@@ -59,6 +59,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("side_suit_length", &Settings::side_suit_length)
         .def_readwrite("trump_suit_length", &Settings::trump_suit_length)
         .def_readwrite("use_signals", &Settings::use_signals)
+        .def_readwrite("single_signal", &Settings::single_signal)
         .def_readwrite("bank", &Settings::bank)
         .def_readwrite("task_distro", &Settings::task_distro)
         .def_readwrite("task_idxs", &Settings::task_idxs)
@@ -124,7 +125,6 @@ PYBIND11_MODULE(cpp_game, m)
         .def("gen_tasks", &Engine::gen_tasks)
         .def("reset_state", &Engine::reset_state)
         .def("calc_trick_winner", &Engine::calc_trick_winner)
-        .def("skip_to_next_unsignaled", &Engine::skip_to_next_unsignaled)
         .def("move", &Engine::move)
         .def("valid_actions", &Engine::valid_actions)
         .def_readonly("state", &Engine::state);
@@ -293,7 +293,7 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind RolloutResults struct
     py::class_<RolloutResults>(m, "RolloutResults")
-        .def(py::init<int, int, int, int>())
+        .def(py::init<int, int, int, int, int>())
         .def_readwrite("hist_player_idxs", &RolloutResults::hist_player_idxs)
         .def_readwrite("hist_tricks", &RolloutResults::hist_tricks)
         .def_readwrite("hist_cards", &RolloutResults::hist_cards)
@@ -310,7 +310,8 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("actions", &RolloutResults::actions)
         .def_readwrite("rewards", &RolloutResults::rewards)
         .def_readwrite("frac_success", &RolloutResults::frac_success)
-        .def_readwrite("win", &RolloutResults::win);
+        .def_readwrite("win", &RolloutResults::win)
+        .def_readwrite("aux_info", &RolloutResults::aux_info);
 
     // Bind Rollout class
     py::class_<Rollout>(m, "Rollout")

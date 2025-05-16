@@ -22,8 +22,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 import cpp_game
 
-from ..game.settings import SETTINGS_TYPE, Settings, get_preset
-from .aux_info import get_aux_info_spec, set_aux_info_hist_only
+from ..game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
+from .actor import ModelBatchActor
 from .hyperparams import HP_TYPE, Hyperparams
 from .models import PolicyValueModel, get_models
 from .rollout import do_batch_rollout_cpp
@@ -85,6 +85,17 @@ def create_lr_sched(optimizer, hp):
             T_max=hp.num_rounds,
             eta_min=hp.lr * hp.lr_min_frac,
         )
+    elif hp.lr_schedule == "warmup_linear":
+        num_warmup_rounds = int(hp.num_rounds * hp.lr_warmup_frac)
+        return torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lambda x: x / num_warmup_rounds
+            if x < num_warmup_rounds
+            else 1
+            - (x - num_warmup_rounds)
+            / (hp.num_rounds - num_warmup_rounds - 1)
+            * (1 - hp.lr_min_frac),
+        )
     elif hp.lr_schedule == "linear":
         return torch.optim.lr_scheduler.LambdaLR(
             optimizer, lambda x: 1 - (x / (hp.num_rounds - 1)) * (1 - hp.lr_min_frac)
@@ -136,14 +147,15 @@ def compute_advantage(
     device: torch.device,
     hp: Hyperparams,
 ):
-    N, T = td["inps", "hist", "player_idxs"].shape
+    N, T = td["inps", "private", "player_idx"].shape
     with torch.no_grad():
         batch_size = hp.batch_size * 4
         values = torch.empty(N, T, device=device)
 
         for i in range(0, N, batch_size):
-            _, batch_values, _ = pv_model(td["inps"][i : i + batch_size])
-            values[i : i + batch_size] = batch_values
+            eff_batch_size = min(batch_size, N - i)
+            _, batch_values, _ = pv_model(td["inps"][i : i + eff_batch_size])
+            values[i : i + eff_batch_size] = batch_values
 
     td["orig_values"] = values
     T = values.shape[-1]
@@ -188,57 +200,24 @@ def get_smooth_l1_loss(beta):
     return nn.SmoothL1Loss(beta=beta)
 
 
-def compute_aux_info_loss(td, spec, separate=False):
-    num_cont = spec["num_cat"].isna().sum()
-    assert spec["num_cat"].head(num_cont).isna().all(), (
-        "Continuous vars must be at the beginning of the spec."
-    )
+def compute_aux_info_loss(td):
+    # (B, C)
+    targets = td["aux_info"].long()
+    # (B, T, C, P)
+    pred = td["aux_info_preds"]
+    _, T, _, P = pred.shape
 
-    targets = td["aux_infos"]
-    preds = td["aux_info_preds"]
-    weights = torch.tensor(spec["weight"], device=targets.device)
-    if separate:
-        losses = []
-    else:
-        loss = 0
+    # (B, T, C)
+    targets = targets.unsqueeze(-2).expand(-1, T, -1)
+    targets = targets.reshape(-1)
+    pred = pred.reshape(-1, P)
+    loss = get_cross_entropy_loss()(pred, targets)
 
-    if num_cont:
-        cont_targets = targets[..., :num_cont]
-        cont_preds = preds[..., :num_cont]
-        cont_weights = weights[:num_cont]
-        cont_loss = cont_weights * (cont_preds - cont_targets) ** 2
-        if separate:
-            losses += torch.mean(cont_loss, dim=(0, 1)).tolist()
-        else:
-            loss += torch.mean(cont_loss)
-
-    num_cats = spec["num_cat"].iloc[num_cont:].astype(int)
-    cat_weights = weights[num_cont:]
-    cat_targets = targets[..., num_cont:].long()
-    cat_preds = preds[..., num_cont:]
-    cur_pred_idx = 0
-    for i, (cat_weight, num_cat) in enumerate(zip(cat_weights, num_cats)):
-        cat_target = cat_targets[..., i]
-        cat_pred = cat_preds[..., cur_pred_idx : cur_pred_idx + num_cat]
-        cat_loss = cat_weight * get_cross_entropy_loss()(
-            cat_pred.reshape((-1, cat_pred.shape[-1])),
-            cat_target.reshape((-1,)),
-        )
-        cur_pred_idx += num_cat
-        if separate:
-            losses.append(cat_loss.item())
-        else:
-            loss += cat_loss
-
-    if separate:
-        return losses
-    else:
-        return loss
+    return loss
 
 
 def compute_loss(
     td,
-    aux_info_spec,
     ppo_clip_ratio,
     ppo_coef,
     entropy_coef,
@@ -266,7 +245,7 @@ def compute_loss(
         index=actions.unsqueeze(-1),
     ).squeeze(-1)
     # (N, T)
-    # At least one valid action
+    # Mask selects for > 1 valid action
     mask = (td["inps", "valid_actions"][..., 0] != -1).sum(dim=-1) > 1
     # (N*T)
     mask = mask.reshape((-1,))
@@ -319,10 +298,7 @@ def compute_loss(
         ppo_coef * ppo_loss + entropy_coef * entropy_loss + value_coef * value_loss
     )
     if aux_info_coef:
-        aux_info_loss = compute_aux_info_loss(
-            td,
-            aux_info_spec,
-        )
+        aux_info_loss = compute_aux_info_loss(td)
         combined_loss += aux_info_coef * aux_info_loss
 
     ret = {
@@ -341,7 +317,9 @@ def compute_loss(
 
 def compute_grad_norms(losses, pv_model):
     ret = {}
-    for loss_name in ["ppo", "value", "entropy"]:
+    for loss_name in ["ppo", "value", "entropy", "aux_info"]:
+        if f"{loss_name}_loss" not in losses:
+            continue
         params = [y for x in pv_model.param_groups.values() for y in x]
         grads = torch.autograd.grad(
             losses[f"{loss_name}_loss"],
@@ -373,9 +351,9 @@ def train_one_epoch(
     hp,
     optim,
     pv_model,
-    aux_info_spec,
     outdir,
     scaler,
+    gc,
 ):
     running_losses = Counter()
     running_grad_norms = Counter()
@@ -422,7 +400,6 @@ def train_one_epoch(
 
                     losses = compute_loss(
                         td_batch,
-                        aux_info_spec,
                         hp.policy_ppo_clip_ratio,
                         hp.policy_ppo_coef,
                         hp.policy_entropy_coef,
@@ -452,7 +429,11 @@ def train_one_epoch(
                     losses["loss"].backward()
 
                 if hp.grad_norm_clip:
-                    clip_grad_norm_(pv_model.parameters(), hp.grad_norm_clip)
+                    total_norm = clip_grad_norm_(
+                        pv_model.parameters(), hp.grad_norm_clip
+                    )
+                    if total_norm.item() >= hp.grad_norm_clip:
+                        gc["num_grad_clips"] += 1
 
                 if scaler:
                     scaler.step(optim)
@@ -495,7 +476,6 @@ def train_one_round(
     writer,
     log_epoch,
     outdir,
-    aux_info_spec,
     scaler,
 ):
     train_data_loader = DataLoader(
@@ -538,9 +518,9 @@ def train_one_round(
                 hp=hp,
                 optim=optim,
                 pv_model=pv_model,
-                aux_info_spec=aux_info_spec,
                 outdir=outdir,
                 scaler=scaler,
+                gc=gc,
             )
             if mode == "train":
                 gc["num_steps"] += num_steps_in_epoch
@@ -567,20 +547,22 @@ def train_one_round(
             if mode == "train":
                 gc["num_rollouts"] += hp.num_train_rollouts_per_round
                 writer.add_scalar(
-                    "counter/num_rollouts",
-                    gc["num_rollouts"],
-                    gc["num_epochs"],
-                )
-                writer.add_scalar(
                     "counter/round",
                     round,
                     gc["num_epochs"],
                 )
-                writer.add_scalar(
-                    "counter/num_steps",
-                    gc["num_steps"],
-                    gc["num_epochs"],
-                )
+                for k in [
+                    "num_rollouts",
+                    "num_steps",
+                    "num_early_stops",
+                    "num_early_stop_max_kls",
+                    "num_grad_clips",
+                ]:
+                    writer.add_scalar(
+                        f"counter/{k}",
+                        gc[k],
+                        gc["num_epochs"],
+                    )
 
             if mode == "train":
                 policy_kl = losses["kl_loss"]
@@ -592,10 +574,12 @@ def train_one_round(
             hp.early_stop_num_epochs
             and epoch - best_loss_epoch >= hp.early_stop_num_epochs
         ):
+            gc["num_early_stops"] += 1
             logger.debug(f"Early stopping at epoch {epoch}")
             break
 
         if policy_kl > hp.policy_early_stop_max_kl:
+            gc["num_early_stop_max_kls"] += 1
             logger.debug(f"Max KL reached at epoch {epoch}. Early stopping.")
             break
 
@@ -617,17 +601,18 @@ def train(
     start_round: int,
     gc: Counter,
     engine_seeds: list[int] | None,
+    skip_checkpoint: bool,
 ) -> None:
     timer = Timer(writer)
-    aux_info_spec = get_aux_info_spec(settings)
     cpp_settings = settings.to_cpp()
     batch_rollout = cpp_game.BatchRollout(
         cpp_settings,
         hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
     )
+    actor = ModelBatchActor(pv_model)
 
     for round in range(start_round, hp.num_rounds):
-        logger.info(f"Round {round}")
+        start_time = time.time()
         pv_model.eval()
 
         if hp.profile_memory:
@@ -639,7 +624,7 @@ def train(
             batch_rollout,
             batch_seed=seed,
             engine_seeds=engine_seeds,
-            pv_model=pv_model,
+            actor=actor,
             device=device,
         )
         timer.finish("rollout", round)
@@ -691,7 +676,6 @@ def train(
             writer=writer,
             log_epoch=(hp.num_rounds <= 5),
             outdir=outdir,
-            aux_info_spec=aux_info_spec,
             scaler=scaler,
         )
         timer.finish("training", round)
@@ -700,17 +684,23 @@ def train(
             print_memory_usage("after train")
             return
 
-        torch.save(
-            {
-                "round": round + 1,
-                "td": td,
-                "pv_model": pv_model.state_dict(),
-                "optim": optim.state_dict(),
-                "lr_sched": lr_sched.state_dict(),
-                "gc": gc,
-                "scaler": (scaler.state_dict() if scaler else None),
-            },
-            outdir / "checkpoint.pth",
+        if not skip_checkpoint:
+            torch.save(
+                {
+                    "round": round + 1,
+                    "td": td,
+                    "pv_model": pv_model.state_dict(),
+                    "optim": optim.state_dict(),
+                    "lr_sched": lr_sched.state_dict(),
+                    "gc": gc,
+                    "scaler": (scaler.state_dict() if scaler else None),
+                },
+                outdir / "checkpoint.pth",
+            )
+
+        elapsed = time.time() - start_time
+        logger.info(
+            f"Round {round}: mean_reward={mean_reward:.3f}, win_rate={win_rate:.3f}, elapsed={elapsed:.3f}s"
         )
 
 
@@ -730,7 +720,7 @@ def train(
 @click.option(
     "--settings",
     type=SETTINGS_TYPE,
-    default=get_preset("easy_p4"),
+    default=get_preset(DEFAULT_PRESET),
     help="Settings",
 )
 @click.option("--device", type=torch.device, default=get_device(), help="Device")
@@ -738,7 +728,7 @@ def train(
     "--seed",
     type=int,
     help="Seed",
-    default=42,
+    default=43,
 )
 @click.option(
     "--clean",
@@ -769,6 +759,11 @@ def train(
 @click.option(
     "--win-cache-dir", type=Path, default=CANON_WIN_CACHE_DIR, help="Win cache dir."
 )
+@click.option(
+    "--skip-checkpoint",
+    is_flag=True,
+    help="Skip checkpoint saving",
+)
 def main(
     outdir: Path,
     hp: Hyperparams,
@@ -781,6 +776,7 @@ def main(
     copy_dir: Path | None,
     win_thresh: float | None,
     win_cache_dir: Path,
+    skip_checkpoint: bool,
 ) -> None:
     outdir = outdir.resolve()
     # nocommit a bit hacky
@@ -840,9 +836,6 @@ def main(
             print_memory_usage("before create models")
 
         logger.info("** Creating models, optimizer **")
-        if hp.aux_info_hist_only:
-            set_aux_info_hist_only(True)
-
         models = get_models(hp, settings)
         for m in models.values():
             m.to(device)
@@ -858,7 +851,7 @@ def main(
             (lr_sched, "lr_sched"),
             (scaler, "scaler"),
         ]:
-            if key in orig_state_dict:
+            if key in orig_state_dict and obj is not None:
                 obj.load_state_dict(orig_state_dict[key])
                 del orig_state_dict[key]
 
@@ -896,6 +889,7 @@ def main(
                 orig_state_dict.get("round", 0),
                 orig_state_dict.get("gc", Counter()),
                 engine_seeds,
+                skip_checkpoint,
             )
     finally:
         (outdir / "_running").unlink()

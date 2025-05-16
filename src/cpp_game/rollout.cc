@@ -19,7 +19,7 @@ MoveInputs::MoveInputs(int num_rollouts, int hand_pad_size, int max_num_tasks)
 {
 }
 
-RolloutResults::RolloutResults(int num_rollouts, int seq_length, int hand_pad_size, int max_num_tasks)
+RolloutResults::RolloutResults(int num_rollouts, int seq_length, int hand_pad_size, int max_num_tasks, int num_cards)
     : hist_player_idxs({num_rollouts, seq_length}),
       hist_tricks({num_rollouts, seq_length}),
       hist_cards({num_rollouts, seq_length, 2}),
@@ -31,12 +31,13 @@ RolloutResults::RolloutResults(int num_rollouts, int seq_length, int hand_pad_si
       turn({num_rollouts, seq_length}),
       phase({num_rollouts, seq_length}),
       valid_actions({num_rollouts, seq_length, hand_pad_size, 2}),
-      task_idxs({num_rollouts, seq_length, max_num_tasks, 2}),
+      task_idxs({num_rollouts, max_num_tasks, 2}),
       log_probs({num_rollouts, seq_length, hand_pad_size}),
       actions({num_rollouts, seq_length}),
       rewards({num_rollouts, seq_length}),
       frac_success(num_rollouts),
-      win(num_rollouts)
+      win(num_rollouts),
+      aux_info({num_rollouts, num_cards})
 {
 }
 
@@ -75,6 +76,7 @@ void Rollout::init_state()
     hist_phases_pt.push_back(-1);
 
     encode_tasks();
+    encode_aux_info();
 }
 
 void Rollout::reset_state(int engine_seed)
@@ -97,6 +99,7 @@ void Rollout::reset_state(int engine_seed)
     log_probs_pt.clear();
     actions_pt.clear();
     rewards_pt.clear();
+    aux_info.clear();
 
     init_state();
 }
@@ -113,6 +116,20 @@ void Rollout::encode_tasks()
             task_idxs[i] = task.task_idx;
             task_idxs[i + 1] = player_idx;
             i += 2;
+        }
+    }
+}
+
+void Rollout::encode_aux_info()
+{
+    aux_info.resize(settings.num_cards());
+    for (int player = 0; player < settings.num_players; ++player)
+    {
+        int player_idx = engine->state.get_player_idx(player);
+        for (auto &card : engine->state.hands[player])
+        {
+            int card_idx = settings.get_suit_idx(card.suit) * settings.side_suit_length + (card.rank - 1);
+            aux_info[card_idx] = player_idx;
         }
     }
 }
@@ -217,7 +234,7 @@ void Rollout::pop_last_history()
 }
 
 BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, bool multithread)
-    : settings(settings_), num_rollouts(num_rollouts_), seq_length(settings.get_seq_length()), hand_pad_size(settings.max_hand_size() + 1), max_num_tasks(settings.get_max_num_tasks()), move_inputs(num_rollouts, hand_pad_size, max_num_tasks), results(num_rollouts, seq_length, hand_pad_size, max_num_tasks)
+    : settings(settings_), num_rollouts(num_rollouts_), seq_length(settings.get_seq_length()), hand_pad_size(settings.max_hand_size() + 1), max_num_tasks(settings.get_max_num_tasks()), move_inputs(num_rollouts, hand_pad_size, max_num_tasks), results(num_rollouts, seq_length, hand_pad_size, max_num_tasks, settings.num_cards())
 {
     if (multithread)
     {
@@ -387,6 +404,7 @@ const RolloutResults &BatchRollout::get_results()
     auto *rewards_ptr = static_cast<float *>(results.rewards.mutable_data());
     auto *frac_success_ptr = static_cast<float *>(results.frac_success.mutable_data());
     auto *win_ptr = static_cast<bool *>(results.win.mutable_data());
+    auto *aux_info_ptr = static_cast<int8_t *>(results.aux_info.mutable_data());
 
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
@@ -439,11 +457,8 @@ const RolloutResults &BatchRollout::get_results()
         std::copy(rollout.valid_actions_pt.begin(), rollout.valid_actions_pt.end(), valid_actions_ptr);
         valid_actions_ptr += seq_length * hand_pad_size * 2;
 
-        for (int i = 0; i < seq_length; ++i)
-        {
-            std::copy(rollout.task_idxs.begin(), rollout.task_idxs.end(), task_idxs_ptr);
-            task_idxs_ptr += rollout.max_num_tasks * 2;
-        }
+        std::copy(rollout.task_idxs.begin(), rollout.task_idxs.end(), task_idxs_ptr);
+        task_idxs_ptr += rollout.max_num_tasks * 2;
 
         std::copy(rollout.log_probs_pt.begin(), rollout.log_probs_pt.end(), log_probs_ptr);
         log_probs_ptr += seq_length * hand_pad_size;
@@ -473,6 +488,9 @@ const RolloutResults &BatchRollout::get_results()
 
         *frac_success_ptr = num_success / (float)num_tasks;
         frac_success_ptr++;
+
+        std::copy(rollout.aux_info.begin(), rollout.aux_info.end(), aux_info_ptr);
+        aux_info_ptr += rollout.aux_info.size();
     }
 
     return results;

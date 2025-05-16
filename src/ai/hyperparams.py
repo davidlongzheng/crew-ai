@@ -25,25 +25,25 @@ class Hyperparams:
     num_train_rollouts_per_round: int = 8192
     num_val_rollouts_per_round: int = 1024
     # Number of trajectories in a batch.
-    batch_size: int = 64
-    lr: float = 1e-3
+    batch_size: int = 160
+    lr: float = 0.000624
     lr_schedule: str = "constant"
-    lr_min_frac: float = 0.1
-    weight_decay: float = (
-        1e-3  # trivial amount of weight decay. set to 1e0 to have an effect.
-    )
+    lr_min_frac: float = 0.8
+    lr_warmup_frac: float = 0.05
+    weight_decay: float = 0.002225
+
     # Adam betas
     beta_1: float = 0.9
     beta_2: float = 0.999
     early_stop_num_epochs: int | None = None
     policy_early_stop_max_kl: float = 0.10
-    grad_norm_clip: float = 1.0
+    grad_norm_clip: float = 0.3716
 
     # For advantage calculation
     # How much to discount future TDs in GAE calculation.
     # gae_lambda=1 converges to advantage = future_rewards - V(s_t)
     # gae_lambda=0 converges to advantage = r_t + V(s_{t+1}) - V(s_t)
-    gae_lambda: float = 0.95
+    gae_lambda: float = 0.9355
 
     # For loss function calculations
     policy_ppo_clip_ratio: float = 0.2
@@ -56,56 +56,58 @@ class Hyperparams:
 
     # For embeddings
     embed_dim: int = 32
-    embed_dropout: float = 0.03
+    embed_dropout: float = 0.04286
     # thermometer encodings for
     # player, trick, rank
     embed_use_pos: bool = False
+    embed_sep_trump_rank: bool = True
 
     # For embedding a hand from a set of card embeddings
-    hand_hidden_dim: int = 32
-    hand_embed_dim: int = 32
+    hand_hidden_dim: int = 64
+    hand_embed_dim: int = 48
     hand_num_hidden_layers: int = 1
     hand_use_layer_norm: bool = True
-    hand_dropout: float = 0.03
+    hand_dropout: float = 0.04286
     hand_agg_method: str = "maxpool"
 
     # For tasks embedding
-    tasks_hidden_dim: int = 32
-    tasks_embed_dim: int = 32
+    tasks_hidden_dim: int = 64
+    tasks_embed_dim: int = 48
     tasks_num_hidden_layers: int = 1
     tasks_use_layer_norm: bool = True
-    tasks_dropout: float = 0.03
+    tasks_dropout: float = 0.04286
     tasks_agg_method: str = "maxpool"
 
     # For public history LSTM/Transformer
-    hist_hidden_dim: int = 32
-    hist_output_dim: int = 32
+    hist_hidden_dim: int = 160
+    hist_output_dim: int = 144
     hist_num_layers: int = 1
     hist_use_layer_norm: bool = True
-    hist_dropout: float = 0.03
+    hist_dropout: float = 0.04286
     hist_use_tasks: bool = True
     hist_use_tformer: bool = False
+    hist_layer_norm_mode: str = "orig"
+    hist_use_phase_mask: bool = False
 
     # For backbone MLP
-    backbone_hidden_dim: int = 32
+    backbone_hidden_dim: int = 512
     backbone_num_hidden_layers: int = 2
     backbone_output_dim: int = 16
-    backbone_dropout: float = 0.03
+    backbone_dropout: float = 0.04286
     backbone_use_layer_norm: bool = True
     backbone_use_skip: bool = True
     backbone_use_resid: bool = False
     backbone_use_final_layer_norm: bool = True
 
     # For policy network
-    policy_hidden_dim: int = 32
+    policy_hidden_dim: int = 96
     policy_num_hidden_layers: int = 1
-    policy_dropout: float = 0.03
+    policy_dropout: float = 0.04286
     policy_use_layer_norm: bool = True
-    policy_query_dim: int = 16  # Attention vector on policy output.
+    policy_query_dim: int = 80  # Attention vector on policy output.
     policy_signal_prior: str = "lin"
-
-    # Only use historical aux info values.
-    aux_info_hist_only: bool = False
+    policy_sep_embed: bool = False
+    policy_use_phase_action_mask: bool = False
 
 
 class HyperparamsType(click.ParamType):

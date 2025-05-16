@@ -2,19 +2,21 @@ import time
 from dataclasses import replace
 
 import numpy as np
+import pytest
 import torch
 from tensordict import TensorDict
 
 import cpp_game
 
-from ...game.settings import get_preset
+from ...game.settings import DEFAULT_PRESET, get_preset
 from ..featurizer import featurize
 from ..rollout import do_batch_rollout, do_batch_rollout_cpp
 
 
-def test_batch_rollout_cpp():
-    settings = get_preset("easy_p4")
-    settings = replace(settings, use_signals=True)
+@pytest.mark.parametrize("single_signal", [True, False])
+def test_batch_rollout_cpp(single_signal):
+    settings = get_preset(DEFAULT_PRESET)
+    settings = replace(settings, use_signals=True, single_signal=single_signal)
     cpp_settings = settings.to_cpp()
     num_rollouts = 500
     batch_rollout = cpp_game.BatchRollout(cpp_settings, num_rollouts)
@@ -59,6 +61,7 @@ def test_batch_rollout_cpp():
 
         start_time = time.time()
         cpp_td = do_batch_rollout_cpp(batch_rollout, batch_seed)
+        del cpp_td["aux_info"]
         print(f"Took {time.time() - start_time:.3f} to run rollouts in C++")
 
         to_process = [(td, cpp_td)]

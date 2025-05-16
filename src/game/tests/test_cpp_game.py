@@ -1,10 +1,12 @@
 import random
 from dataclasses import replace
 
+import pytest
+
 import cpp_game
 
 from ..engine import Engine
-from ..settings import get_preset
+from ..settings import DEFAULT_PRESET, get_preset
 from ..tasks import TASK_DEFS
 
 
@@ -16,6 +18,7 @@ def assert_matching_settings(settings, cpp_settings):
         "side_suit_length",
         "trump_suit_length",
         "use_signals",
+        "single_signal",
         "bank",
         "task_distro",
         "min_difficulty",
@@ -47,15 +50,16 @@ def assert_matching_tasks(engine, cpp_engine):
             assert task.in_one_trick == cpp_task.in_one_trick
 
 
-def init_matching_engines(seed, task_idxs):
-    settings = get_preset("easy_p4")
+def init_matching_engines(seed, task_idxs, single_signal):
+    settings = get_preset(DEFAULT_PRESET)
     settings = replace(
-        settings, bank="all", task_idxs=tuple(task_idxs), use_signals=True
+        settings,
+        bank="all",
+        task_idxs=tuple(task_idxs),
+        use_signals=True,
+        single_signal=single_signal,
     )
-    cpp_settings = cpp_game.get_preset("easy_p4")
-    cpp_settings.bank = "all"
-    cpp_settings.task_idxs = task_idxs
-    cpp_settings.use_signals = True
+    cpp_settings = settings.to_cpp()
     assert_matching_settings(settings, cpp_settings)
     assert settings.task_idxs
     assert cpp_settings.task_idxs
@@ -135,7 +139,8 @@ def assert_matching_state(engine, cpp_engine):
     assert_matching_tasks(engine, cpp_engine)
 
 
-def test_cpp_game():
+@pytest.mark.parametrize("single_signal", [True, False])
+def test_cpp_game(single_signal):
     num_tasks = len(TASK_DEFS)
     step_size = 12
     for task_start_idx in range(0, num_tasks, step_size):
@@ -144,7 +149,7 @@ def test_cpp_game():
         )
         for engine_seed in range(20):
             engine, cpp_engine = init_matching_engines(
-                seed=engine_seed, task_idxs=task_idxs
+                seed=engine_seed, task_idxs=task_idxs, single_signal=single_signal
             )
 
             assert_matching_state(engine, cpp_engine)

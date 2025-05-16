@@ -18,6 +18,7 @@ struct Settings
     int side_suit_length = 9;
     int trump_suit_length = 4;
     bool use_signals = true;
+    bool single_signal = false;
 
     std::string bank = "easy";
     // In fixed, tasks are distributed according to the order of tasks,
@@ -46,17 +47,17 @@ struct Settings
     // Methods
     int num_tricks() const
     {
-        return (num_side_suits * side_suit_length +
-                (use_trump_suit ? trump_suit_length : 0)) /
-               num_players;
+        return num_cards() / num_players;
     }
 
     int max_hand_size() const
     {
-        return (num_side_suits * side_suit_length +
-                (use_trump_suit ? trump_suit_length : 0) - 1) /
-                   num_players +
-               1;
+        return (num_cards() - 1) / num_players + 1;
+    }
+
+    int num_cards() const
+    {
+        return num_side_suits * side_suit_length + (use_trump_suit ? trump_suit_length : 0);
     }
 
     int get_suit_idx(int suit) const
@@ -121,6 +122,11 @@ struct Settings
         }
     }
 
+    bool use_nosignal() const
+    {
+        return use_signals && !single_signal;
+    }
+
     int max_suit_length() const
     {
         return use_trump_suit ? std::max(side_suit_length, trump_suit_length) : side_suit_length;
@@ -151,7 +157,7 @@ struct Settings
     // Number of moves in a game
     int get_seq_length() const
     {
-        return num_players * num_tricks() * (use_signals ? 2 : 1);
+        return num_players * (num_tricks() * (use_signals && !single_signal ? 2 : 1) + (single_signal ? 1 : 0));
     }
 
     // Validation
@@ -201,6 +207,7 @@ struct Settings
                ", side_suit_length=" + std::to_string(side_suit_length) +
                ", trump_suit_length=" + std::to_string(trump_suit_length) +
                ", use_signals=" + std::to_string(use_signals) +
+               ", single_signal=" + std::to_string(single_signal) +
                ", bank=" + bank +
                ", task_distro=" + task_distro +
                ", task_bonus=" + std::to_string(task_bonus) +
