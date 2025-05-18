@@ -88,6 +88,7 @@ class Hyperparams:
     hist_use_tformer: bool = False
     hist_layer_norm_mode: str = "orig"
     hist_use_phase_mask: bool = False
+    hist_embed_sum: bool = False
 
     # For backbone MLP
     backbone_hidden_dim: int = 512
@@ -98,6 +99,7 @@ class Hyperparams:
     backbone_use_skip: bool = True
     backbone_use_resid: bool = False
     backbone_use_final_layer_norm: bool = True
+    backbone_embed_sum: bool = False
 
     # For policy network
     policy_hidden_dim: int = 96

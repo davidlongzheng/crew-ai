@@ -37,6 +37,7 @@ class HistoryModel(nn.Module):
         use_tformer: bool,
         layer_norm_mode: str,
         use_phase_mask: bool,
+        embed_sum: bool,
     ):
         super().__init__()
         self.player_embed = player_embed
@@ -44,11 +45,13 @@ class HistoryModel(nn.Module):
         self.card_embed = card_embed
         self.turn_embed = turn_embed
         self.phase_embed = phase_embed
+        self.embed_sum = embed_sum
         self.use_tasks = use_tasks
         self.use_phase_mask = use_phase_mask
+        assert not (embed_sum and use_phase_mask)
 
         input_dim = (
-            4 if use_phase_mask else 5
+            1 if embed_sum else 4 if use_phase_mask else 5
         ) * embed_dim + tasks_embed_dim * use_tasks
 
         self.use_tformer = use_tformer
@@ -117,7 +120,9 @@ class HistoryModel(nn.Module):
         card_embed = self.card_embed(hist_inps["cards"])
         turn_embed = self.turn_embed(hist_inps["turns"])
         phase_embed = self.phase_embed(hist_inps["phases"])
-        if self.use_phase_mask:
+        if self.embed_sum:
+            inps = [player_embed + trick_embed + card_embed + turn_embed]
+        elif self.use_phase_mask:
             card_embed = card_embed * F.sigmoid(phase_embed)
             inps = [player_embed, trick_embed, card_embed, turn_embed]
         else:
@@ -212,6 +217,7 @@ class BackboneModel(nn.Module):
         use_skip: bool,
         use_resid: bool,
         use_final_layer_norm: bool,
+        embed_sum: bool,
     ):
         super().__init__()
         self.hist_model = hist_model
@@ -223,12 +229,13 @@ class BackboneModel(nn.Module):
         self.tasks_embed = tasks_embed
         self.use_skip = use_skip
         self.use_resid = use_resid
+        self.embed_sum = embed_sum
         self.output_dim = output_dim
         if self.use_skip:
             self.output_dim += self.hist_model.output_dim
         input_dim = (
             self.hist_model.output_dim
-            + embed_dim * 4
+            + embed_dim * (1 if embed_sum else 4)
             + self.tasks_embed.output_dim
             + self.hand_embed.output_dim
         )
@@ -293,9 +300,12 @@ class BackboneModel(nn.Module):
         trick_embed = self.trick_embed(private_inps["trick"])
         turn_embed = self.turn_embed(private_inps["turn"])
         phase_embed = self.phase_embed(private_inps["phase"])
-        private_embed = torch.cat(
-            [player_embed, trick_embed, turn_embed, phase_embed], dim=-1
-        )
+        if self.embed_sum:
+            private_embed = player_embed + trick_embed + turn_embed + phase_embed
+        else:
+            private_embed = torch.cat(
+                [player_embed, trick_embed, turn_embed, phase_embed], dim=-1
+            )
 
         inps = [hist_embed, private_embed, tasks_embed, hand_embed]
         x = torch.cat(inps, dim=-1)
@@ -361,7 +371,6 @@ class PolicyHead(nn.Module):
         self.sep_embed = sep_embed
         self.use_phase_action_mask = use_phase_action_mask
         if sep_embed:
-            self.query_model = nn.Linear(query_input_dim, query_dim)
             self.key_model: nn.Module = PaddedEmbed(
                 num_actions(settings),
                 query_dim,
@@ -376,7 +385,6 @@ class PolicyHead(nn.Module):
             key_input_dim = card_embed.output_dim + (
                 0 if use_phase_action_mask else phase_embed.output_dim
             )
-            self.query_model = nn.Linear(query_input_dim, query_dim)
             self.key_layer_norm = (
                 nn.LayerNorm(key_input_dim) if use_layer_norm else None
             )
@@ -388,6 +396,7 @@ class PolicyHead(nn.Module):
                 dropout=dropout,
             )
         self.query_dim = query_dim
+        self.query_model = nn.Linear(query_input_dim, query_dim)
         self.log_softmax = nn.LogSoftmax(dim=-1)
 
         self.use_nosignal = settings.use_nosignal
@@ -422,7 +431,6 @@ class PolicyHead(nn.Module):
             key = self.key_model(action_idx)
             if self.key_layer_norm:
                 key = self.key_layer_norm(key)
-            query = self.query_model(backbone_embed)
         else:
             valid_actions_embed = self.card_embed(valid_actions)
             if self.use_phase_action_mask:
@@ -436,7 +444,6 @@ class PolicyHead(nn.Module):
 
             if self.key_layer_norm:
                 key_input = self.key_layer_norm(key_input)
-            query = self.query_model(backbone_embed)
             key = self.key_model(key_input)
 
             if self.use_phase_action_mask:
@@ -446,6 +453,7 @@ class PolicyHead(nn.Module):
                 key = key * phase_mask
 
         # (..., A)
+        query = self.query_model(backbone_embed)
         attn_score = torch.einsum("...q,...vq->...v", query, key) / self.query_dim**0.5
         attn_score = attn_score.masked_fill(
             valid_actions[..., 0] == -1,
@@ -588,6 +596,7 @@ def get_models(
         hp.hist_use_tformer,
         hp.hist_layer_norm_mode,
         hp.hist_use_phase_mask,
+        hp.hist_embed_sum,
     )
     backbone_model = BackboneModel(
         hist_model,
@@ -606,6 +615,7 @@ def get_models(
         hp.backbone_use_skip,
         hp.backbone_use_resid,
         hp.backbone_use_final_layer_norm,
+        hp.backbone_embed_sum,
     )
     if hp.aux_info_coef:
         aux_info_head = AuxInfoHead(

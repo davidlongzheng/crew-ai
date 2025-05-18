@@ -164,13 +164,15 @@ def get_preset(preset):
             num_players=3,
             side_suit_length=4,
             trump_suit_length=2,
-            use_signals=False,
+            use_signals=True,
+            single_signal=True,
             bank="easy",
             task_idxs=(0, 0, 1),
         )
     elif preset == "easy_p4":
         return Settings(
-            use_signals=False,
+            use_signals=True,
+            single_signal=True,
             bank="easy",
             task_idxs=(0, 0, 1, 2),
         )
