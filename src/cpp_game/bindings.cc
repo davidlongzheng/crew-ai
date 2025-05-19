@@ -60,6 +60,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("trump_suit_length", &Settings::trump_suit_length)
         .def_readwrite("use_signals", &Settings::use_signals)
         .def_readwrite("single_signal", &Settings::single_signal)
+        .def_readwrite("cheating_signal", &Settings::cheating_signal)
         .def_readwrite("bank", &Settings::bank)
         .def_readwrite("task_distro", &Settings::task_distro)
         .def_readwrite("task_idxs", &Settings::task_idxs)
@@ -262,7 +263,6 @@ PYBIND11_MODULE(cpp_game, m)
     m.def("parse_card_filter", &parse_card_filter, "Parse card filter from string");
     m.def("parse_token", &parse_token, "Parse token into condition");
     m.def("get_task_defs", &get_task_defs, "Get task definitions");
-    m.def("get_preset", &get_preset, "Get preset");
 
     // Bind enums
     py::enum_<ActionType>(m, "ActionType")
@@ -273,7 +273,8 @@ PYBIND11_MODULE(cpp_game, m)
     py::enum_<SignalValue>(m, "SignalValue")
         .value("singleton", SignalValue::kSingleton)
         .value("highest", SignalValue::kHighest)
-        .value("lowest", SignalValue::kLowest);
+        .value("lowest", SignalValue::kLowest)
+        .value("other", SignalValue::kOther);
 
     // Bind MoveInputs struct
     py::class_<MoveInputs>(m, "MoveInputs")

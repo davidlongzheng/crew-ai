@@ -7,7 +7,7 @@ class MLP(nn.Module):
         self,
         input_dim: int,
         hidden_dim: int,
-        output_dim: int,
+        output_dim: int | None,
         num_hidden_layers: int,
         *,
         dropout=0.0,
@@ -42,7 +42,9 @@ class MLP(nn.Module):
         self.fcs = nn.ModuleList(fcs)
         self.layer_norms = nn.ModuleList(layer_norms) if use_layer_norm else None
         self.resid_fcs = nn.ModuleList(resid_fcs) if use_resid else None
-        self.out_fc = nn.Linear(hidden_dim, output_dim)
+        self.out_fc = (
+            nn.Linear(hidden_dim, output_dim) if output_dim is not None else None
+        )
 
     def forward(self, x):
         for i, fc in enumerate(self.fcs):
@@ -55,4 +57,7 @@ class MLP(nn.Module):
                 y = self.resid_fcs[i](x) + y
             x = y
 
-        return self.out_fc(x)
+        if self.out_fc:
+            x = self.out_fc(x)
+
+        return x

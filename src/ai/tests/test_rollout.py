@@ -13,10 +13,20 @@ from ..featurizer import featurize
 from ..rollout import do_batch_rollout, do_batch_rollout_cpp
 
 
-@pytest.mark.parametrize("single_signal", [True, False])
-def test_batch_rollout_cpp(single_signal):
+@pytest.mark.parametrize("signal_mode", ["no", "yes", "single", "cheating"])
+def test_batch_rollout_cpp(signal_mode):
+    kwargs = {}
+    if signal_mode == "no":
+        kwargs = {"use_signals": False, "single_signal": False}
+    elif signal_mode == "yes":
+        kwargs = {"use_signals": True, "single_signal": False}
+    elif signal_mode == "single":
+        kwargs = {"use_signals": True, "single_signal": True}
+    elif signal_mode == "cheating":
+        kwargs = {"use_signals": True, "single_signal": False, "cheating_signal": True}
+
     settings = get_preset(DEFAULT_PRESET)
-    settings = replace(settings, use_signals=True, single_signal=single_signal)
+    settings = replace(settings, **kwargs)
     cpp_settings = settings.to_cpp()
     num_rollouts = 500
     batch_rollout = cpp_game.BatchRollout(cpp_settings, num_rollouts)

@@ -65,7 +65,9 @@ void test_single_rollout()
     std::cout << "=== Testing Single Rollout ===" << std::endl;
 
     // Create settings
-    Settings settings = get_preset("easy_p4");
+    Settings settings;
+    settings.single_signal = true;
+    settings.task_idxs = {0, 0, 1, 2};
 
     // Create a rollout
     int engine_seed = 42;
@@ -99,7 +101,9 @@ void test_batch_rollout()
     std::cout << "\n=== Testing Batch Rollout ===" << std::endl;
 
     // Create settings
-    Settings settings = get_preset("easy_p4");
+    Settings settings;
+    settings.single_signal = true;
+    settings.task_idxs = {0, 0, 1, 2};
 
     // Create a batch rollout
     int num_rollouts = 1000;

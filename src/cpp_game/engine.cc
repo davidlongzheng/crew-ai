@@ -250,14 +250,17 @@ double Engine::move(const Action &action)
         assert(settings.use_signals);
         assert(action.player == state.cur_player);
         auto &player_hand = state.hands[state.cur_player];
-        assert(action.type == ActionType::kSignal || (!settings.single_signal && action.type == ActionType::kNoSignal));
+        assert(action.type == ActionType::kSignal || (settings.use_nosignal() && action.type == ActionType::kNoSignal));
 
         if (action.type == ActionType::kSignal)
         {
             assert(std::find(player_hand.begin(), player_hand.end(), action.card.value()) !=
                    player_hand.end());
-            assert(!action.card.value().is_trump());
-            assert(!state.signals[state.cur_player].has_value());
+            if (!settings.cheating_signal)
+            {
+                assert(!action.card.value().is_trump());
+                assert(!state.signals[state.cur_player].has_value());
+            }
 
             // Find matching suit cards
             std::vector<Card> matching_suit_cards;
@@ -276,8 +279,11 @@ double Engine::move(const Action &action)
                           return a.rank < b.rank;
                       });
 
-            assert(action.card.value() == matching_suit_cards.front() ||
-                   action.card.value() == matching_suit_cards.back());
+            if (!settings.cheating_signal)
+            {
+                assert(action.card.value() == matching_suit_cards.front() ||
+                       action.card.value() == matching_suit_cards.back());
+            }
 
             SignalValue value;
             if (matching_suit_cards.size() == 1)
@@ -288,9 +294,13 @@ double Engine::move(const Action &action)
             {
                 value = SignalValue::kHighest;
             }
-            else
+            else if (action.card.value() == matching_suit_cards.front())
             {
                 value = SignalValue::kLowest;
+            }
+            else
+            {
+                value = SignalValue::kOther;
             }
 
             state.signals[state.cur_player] = Signal{action.card.value(), value, state.trick};
@@ -479,12 +489,12 @@ std::vector<Action> Engine::valid_actions() const
 
         std::vector<Action> ret;
 
-        if (!settings.single_signal)
+        if (!settings.single_signal && !settings.cheating_signal)
         {
             ret.push_back({state.cur_player, ActionType::kNoSignal, std::nullopt});
         }
 
-        if (state.signals[state.cur_player].has_value())
+        if (state.signals[state.cur_player].has_value() && !settings.cheating_signal)
         {
             return ret;
         }
@@ -493,25 +503,35 @@ std::vector<Action> Engine::valid_actions() const
         std::vector<Card> player_hand;
         for (const Card &card : state.hands[state.cur_player])
         {
-            if (!card.is_trump())
+            if (!card.is_trump() || settings.cheating_signal)
             {
                 player_hand.push_back(card);
             }
         }
 
-        // Split by suit
-        auto sub_hands = split_by_suit(player_hand);
-
-        for (const auto &sub_hand : sub_hands)
+        if (settings.cheating_signal)
         {
-            if (sub_hand.size() == 1)
+            for (const auto &card : player_hand)
             {
-                ret.push_back({state.cur_player, ActionType::kSignal, sub_hand.front()});
+                ret.push_back({state.cur_player, ActionType::kSignal, card});
             }
-            else
+        }
+        else
+        {
+            // Split by suit
+            auto sub_hands = split_by_suit(player_hand);
+
+            for (const auto &sub_hand : sub_hands)
             {
-                ret.push_back({state.cur_player, ActionType::kSignal, sub_hand.front()});
-                ret.push_back({state.cur_player, ActionType::kSignal, sub_hand.back()});
+                if (sub_hand.size() == 1)
+                {
+                    ret.push_back({state.cur_player, ActionType::kSignal, sub_hand.front()});
+                }
+                else
+                {
+                    ret.push_back({state.cur_player, ActionType::kSignal, sub_hand.front()});
+                    ret.push_back({state.cur_player, ActionType::kSignal, sub_hand.back()});
+                }
             }
         }
 

@@ -310,24 +310,7 @@ def get_embed_models(
             hp.embed_dropout,
             embed_type="embed",
         ),
+        "hand": hand_model,
     }
-
-    if hp.hist_use_phase_mask:
-        ret["hist_phase_mask"] = PaddedEmbed(
-            settings.num_phases,
-            card_model.output_dim,
-            dropout=0.0,
-            embed_type="embed",
-        )
-
-    if hp.policy_use_phase_action_mask:
-        ret["phase_action_mask"] = PaddedEmbed(
-            settings.num_phases,
-            hp.policy_query_dim,
-            dropout=0.0,
-            embed_type="embed",
-        )
-
-    ret["hand"] = hand_model
 
     return ret

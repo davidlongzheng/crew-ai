@@ -19,6 +19,7 @@ struct Settings
     int trump_suit_length = 4;
     bool use_signals = true;
     bool single_signal = false;
+    bool cheating_signal = false;
 
     std::string bank = "easy";
     // In fixed, tasks are distributed according to the order of tasks,
@@ -124,7 +125,7 @@ struct Settings
 
     bool use_nosignal() const
     {
-        return use_signals && !single_signal;
+        return use_signals && !single_signal && !cheating_signal;
     }
 
     int max_suit_length() const
@@ -176,6 +177,18 @@ struct Settings
         if (win_bonus < 0)
             return false;
 
+        if (single_signal || cheating_signal)
+        {
+            if (single_signal && cheating_signal)
+            {
+                return false;
+            }
+            if (!use_signals)
+            {
+                return false;
+            }
+        }
+
         // Check task difficulty constraints
         bool has_task_idxs = !task_idxs.empty();
         bool has_min_difficulty = min_difficulty.has_value();
@@ -208,47 +221,10 @@ struct Settings
                ", trump_suit_length=" + std::to_string(trump_suit_length) +
                ", use_signals=" + std::to_string(use_signals) +
                ", single_signal=" + std::to_string(single_signal) +
+               ", cheating_signal=" + std::to_string(cheating_signal) +
                ", bank=" + bank +
                ", task_distro=" + task_distro +
                ", task_bonus=" + std::to_string(task_bonus) +
                ", win_bonus=" + std::to_string(win_bonus) + ")";
     }
 };
-
-// Preset factory functions
-inline Settings get_preset(const std::string &preset)
-{
-    if (preset == "easy_p3")
-    {
-        Settings settings;
-        settings.num_players = 3;
-        settings.side_suit_length = 4;
-        settings.trump_suit_length = 2;
-        settings.use_signals = false;
-        settings.bank = "easy";
-        settings.task_idxs = {0, 0, 1};
-        return settings;
-    }
-    else if (preset == "easy_p4")
-    {
-        Settings settings;
-        settings.use_signals = false;
-        settings.bank = "easy";
-        settings.task_idxs = {0, 0, 1, 2};
-        return settings;
-    }
-    else if (preset == "med")
-    {
-        Settings settings;
-        settings.use_signals = false;
-        settings.bank = "med";
-        settings.min_difficulty = 1;
-        settings.max_difficulty = 3;
-        settings.max_num_tasks = 4;
-        return settings;
-    }
-    else
-    {
-        throw std::runtime_error("Unknown preset: " + preset);
-    }
-}

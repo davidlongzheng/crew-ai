@@ -47,7 +47,7 @@ class Action:
         return str(self)
 
 
-SignalValue = Literal["highest", "lowest", "singleton"]
+SignalValue = Literal["highest", "lowest", "singleton", "other"]
 
 
 @dataclass(frozen=True)

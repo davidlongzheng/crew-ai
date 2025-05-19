@@ -1041,28 +1041,7 @@ inline const std::vector<std::tuple<std::string, std::string, int>> EASY_TASK_DE
     },
 };
 
-inline const std::vector<std::tuple<std::string, std::string, int>> MED_TASK_DEFS = {
-    {"4b", "I will win 4b.", 1},
-    {"nolead(p,g)", "I will not open with a pink or green.", 1},
-    {"3p", "I will win 3p.", 1},
-    {"1y", "I will win 1y.", 1},
-    {"#t=0", "I will win no submarines.", 1},
-    {"3t", "I will win 3t.", 1},
-    {"T0", "I will win the first trick.", 1},
-    {"6g", "I will win 6g", 1},
-    {"#p>#g", "I will win more pink than green cards. 0 green cards is allowed.", 1},
-    {"T0 T1", "I will win the first 2 tricks.", 1},
-    {"#T<#T(anyother)", "I will win fewer tricks than anyone else.", 2},
-    {"#y=0", "I will no yellows.", 2},
-    {"#T=2", "I will win exactly 2 tricks.", 2},
-    {"#1=0", "I will win no 1.", 2},
-    {"#p=0", "I will win no pink.", 2},
-    {"consec(2) #T=2", "I will win exactly 2 tricks and they will be in a row.", 3},
-    {"9y 7b", "I will win 9y and 7b.", 3},
-    {"consec(3) #T=3", "I will win exactly 3 tricks and they will be in a row.", 3},
-    {"1T 7p with(t)", "I will win 7p with a submarine.", 3},
-    {"1T with(6)", "I will win a trick using a 6.", 3},
-};
+inline const std::vector<std::tuple<std::string, std::string, int>> MED_TASK_DEFS = {{"6g", "I will win 6g", 1}, {"#7>=2", "I will win at least 2 7's.", 2}, {"#T=2", "I will win exactly 2 tricks.", 2}, {"#t=0", "I will win no submarines.", 1}, {"T-1", "I will win the last trick.", 3}, {"3p", "I will win 3p.", 1}, {"consec(3)", "I will win 3 tricks in a row.", 3}, {"no(T0) no(T1) no(T2)", "I will win none of the first 3 tricks.", 2}, {"#p>=1 #g>=1 #y>=1 #b>=1", "I will win at least one card of each color.", 3}, {"#5=0", "I will no 5", 2}, {"3t", "I will win 3t.", 1}, {"T0", "I will win the first trick.", 1}, {"1y", "I will win 1y.", 1}, {"#T>#T(anyother)", "I will win more tricks than anyone else.", 3}, {"#p=0", "I will win no pink.", 2}, {"consec(2)", "I will win 2 tricks in a row.", 1}, {"#9=2", "I will win exactly 2 9's.", 3}, {"nolead(y,p,b)", "I will not open a trick with yellow, pink, or blue.", 3}, {"#p>#g", "I will win more pink than green cards. 0 green cards is allowed.", 1}, {"#p=0 #b=0", "I will win no pink or blues.", 3}, {"no(consec(2))", "I will never win 2 tricks in a row.", 2}, {"#1=0", "I will win no 1.", 2}, {"no(T0) no(T1) no(T2) no(T3) no(T4)", "I will none of the first 5 tricks.", 3}, {"#y>#b", "I will more yellow than blue cards. 0 blue cards is allowed", 1}, {"#g=0", "I will win no greens.", 2}, {"#y=0", "I will no yellows.", 2}, {"nolead(p,g)", "I will not open with a pink or green.", 1}, {"#9=0", "I will win no 9.", 1}, {"no(T0) no(T1) no(T2) no(T3)", "I will win none of the first 4 tricks.", 2}, {"4b", "I will win 4b.", 1}};
 
 // Function to get task definitions
 inline std::vector<std::tuple<std::string, std::string, int>>

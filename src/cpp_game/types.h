@@ -142,7 +142,8 @@ enum class SignalValue
 {
     kHighest,
     kLowest,
-    kSingleton
+    kSingleton,
+    kOther
 };
 
 // Convert string to SignalValue
@@ -154,6 +155,8 @@ inline SignalValue string_to_signal_value(std::string_view value)
         return SignalValue::kLowest;
     if (value == "singleton")
         return SignalValue::kSingleton;
+    if (value == "other")
+        return SignalValue::kOther;
     throw std::runtime_error("Invalid signal value: " + std::string(value));
 }
 
@@ -168,6 +171,8 @@ inline std::string signal_value_to_string(SignalValue value)
         return "lowest";
     case SignalValue::kSingleton:
         return "singleton";
+    case SignalValue::kOther:
+        return "other";
     default:
         throw std::runtime_error("Invalid signal value");
     }

@@ -21,6 +21,7 @@ class Settings:
     side_suit_length: int = 9
     trump_suit_length: int = 4
     use_signals: bool = True
+    cheating_signal: bool = False
     single_signal: bool = False
 
     bank: str = "easy"
@@ -107,7 +108,7 @@ class Settings:
 
     @cached_property
     def use_nosignal(self):
-        return self.use_signals and not self.single_signal
+        return self.use_signals and not self.single_signal and not self.cheating_signal
 
     @cached_property
     def max_suit_length(self):
@@ -145,6 +146,7 @@ class Settings:
         cpp_settings.side_suit_length = self.side_suit_length
         cpp_settings.trump_suit_length = self.trump_suit_length
         cpp_settings.use_signals = self.use_signals
+        cpp_settings.cheating_signal = self.cheating_signal
         cpp_settings.single_signal = self.single_signal
         cpp_settings.bank = self.bank
         cpp_settings.task_distro = self.task_distro
@@ -164,21 +166,21 @@ def get_preset(preset):
             num_players=3,
             side_suit_length=4,
             trump_suit_length=2,
-            use_signals=True,
             single_signal=True,
-            bank="easy",
             task_idxs=(0, 0, 1),
         )
     elif preset == "easy_p4":
         return Settings(
-            use_signals=True,
             single_signal=True,
-            bank="easy",
+            task_idxs=(0, 0, 1, 2),
+        )
+    elif preset == "easy_p4_cheating":
+        return Settings(
+            cheating_signal=True,
             task_idxs=(0, 0, 1, 2),
         )
     elif preset == "med":
         return Settings(
-            use_signals=False,
             bank="med",
             min_difficulty=1,
             max_difficulty=3,

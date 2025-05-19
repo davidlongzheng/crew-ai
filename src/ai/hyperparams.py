@@ -82,34 +82,23 @@ class Hyperparams:
     hist_hidden_dim: int = 160
     hist_output_dim: int = 144
     hist_num_layers: int = 1
-    hist_use_layer_norm: bool = True
     hist_dropout: float = 0.04286
-    hist_use_tasks: bool = True
-    hist_use_tformer: bool = False
-    hist_layer_norm_mode: str = "orig"
-    hist_use_phase_mask: bool = False
-    hist_embed_sum: bool = False
+    hist_phase_branch: bool = False
 
     # For backbone MLP
     backbone_hidden_dim: int = 512
     backbone_num_hidden_layers: int = 2
     backbone_output_dim: int = 16
     backbone_dropout: float = 0.04286
-    backbone_use_layer_norm: bool = True
-    backbone_use_skip: bool = True
-    backbone_use_resid: bool = False
-    backbone_use_final_layer_norm: bool = True
-    backbone_embed_sum: bool = False
+    backbone_no_head: bool = False
 
     # For policy network
     policy_hidden_dim: int = 96
     policy_num_hidden_layers: int = 1
     policy_dropout: float = 0.04286
-    policy_use_layer_norm: bool = True
     policy_query_dim: int = 80  # Attention vector on policy output.
     policy_signal_prior: str = "lin"
-    policy_sep_embed: bool = False
-    policy_use_phase_action_mask: bool = False
+    policy_phase_branch: bool = False
 
 
 class HyperparamsType(click.ParamType):

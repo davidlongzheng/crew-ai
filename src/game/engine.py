@@ -161,31 +161,38 @@ class Engine:
             assert action.player == self.state.cur_player
             player_hand = self.state.hands[self.state.cur_player]
             assert action.type == "signal" or (
-                not self.settings.single_signal and action.type == "nosignal"
+                self.settings.use_nosignal and action.type == "nosignal"
             ), action.type
 
             if action.type == "signal":
                 assert action.card in player_hand, (action.card, player_hand)
-                assert not action.card.is_trump, f"Cannot signal trump: {action.card}"
-                assert self.state.signals[self.state.cur_player] is None, (
-                    f"P{self.state.cur_player} has already signaled"
-                )
+                if not self.settings.cheating_signal:
+                    assert not action.card.is_trump, (
+                        f"Cannot signal trump: {action.card}"
+                    )
+                    assert self.state.signals[self.state.cur_player] is None, (
+                        f"P{self.state.cur_player} has already signaled"
+                    )
+
                 matching_suit_cards = [
                     card for card in player_hand if card.suit == action.card.suit
                 ]
                 matching_suit_cards = sorted(matching_suit_cards, key=lambda x: x.rank)
-                assert (
-                    action.card == matching_suit_cards[0]
-                    or action.card == matching_suit_cards[-1]
-                ), (
-                    f"Signal card must be lowest/highest/singleton: {action.card} {matching_suit_cards}"
-                )
+                if not self.settings.cheating_signal:
+                    assert (
+                        action.card == matching_suit_cards[0]
+                        or action.card == matching_suit_cards[-1]
+                    ), (
+                        f"Signal card must be lowest/highest/singleton: {action.card} {matching_suit_cards}"
+                    )
                 value: SignalValue = (
                     "singleton"
                     if len(matching_suit_cards) == 1
                     else "highest"
                     if action.card == matching_suit_cards[-1]
                     else "lowest"
+                    if action.card == matching_suit_cards[0]
+                    else "other"
                 )
                 self.state.signals[self.state.cur_player] = Signal(
                     action.card, value, self.state.trick
@@ -286,39 +293,48 @@ class Engine:
         if self.state.phase == "signal":
             assert self.settings.use_signals
             ret: list[Action] = []
-            if not self.settings.single_signal:
+            if not self.settings.single_signal and not self.settings.cheating_signal:
                 ret.append(
                     Action(player=self.state.cur_player, type="nosignal", card=None)
                 )
-            if self.state.signals[self.state.cur_player] is not None:
+            if (
+                self.state.signals[self.state.cur_player] is not None
+                and not self.settings.cheating_signal
+            ):
                 return ret
             player_hand = [
                 card
                 for card in self.state.hands[self.state.cur_player]
-                if not card.is_trump
+                if not card.is_trump or self.settings.cheating_signal
             ]
-            for sub_hand in split_by_suit(player_hand):
-                if len(sub_hand) == 1:
+            if self.settings.cheating_signal:
+                for card in player_hand:
                     ret.append(
-                        Action(
-                            player=self.state.cur_player,
-                            type="signal",
-                            card=sub_hand[0],
-                        )
+                        Action(player=self.state.cur_player, type="signal", card=card)
                     )
-                else:
-                    ret += [
-                        Action(
-                            player=self.state.cur_player,
-                            type="signal",
-                            card=sub_hand[0],
-                        ),
-                        Action(
-                            player=self.state.cur_player,
-                            type="signal",
-                            card=sub_hand[-1],
-                        ),
-                    ]
+            else:
+                for sub_hand in split_by_suit(player_hand):
+                    if len(sub_hand) == 1:
+                        ret.append(
+                            Action(
+                                player=self.state.cur_player,
+                                type="signal",
+                                card=sub_hand[0],
+                            )
+                        )
+                    else:
+                        ret += [
+                            Action(
+                                player=self.state.cur_player,
+                                type="signal",
+                                card=sub_hand[0],
+                            ),
+                            Action(
+                                player=self.state.cur_player,
+                                type="signal",
+                                card=sub_hand[-1],
+                            ),
+                        ]
             return ret
         elif self.state.phase == "play":
             player_hand = self.state.hands[self.state.cur_player]

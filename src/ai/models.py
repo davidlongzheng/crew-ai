@@ -1,10 +1,9 @@
 from functools import cached_property
-from typing import cast
+from typing import Callable, cast
 
 import torch
 from tensordict import TensorDict
 from torch import Tensor, nn
-from torch.nn import functional as F
 
 from ..game.settings import Settings
 from .embedding import (
@@ -16,6 +15,100 @@ from .embedding import (
 )
 from .hyperparams import Hyperparams
 from .utils import MLP
+
+
+def get_splits_and_phases(settings):
+    if settings.use_signals:
+        if settings.single_signal:
+            splits = [
+                settings.num_players,
+                settings.num_players * settings.num_tricks,
+            ]
+            phases = [1, 0]
+        else:
+            splits = [settings.num_players] * (settings.num_tricks * 2)
+            phases = [1, 0] * settings.num_tricks
+    else:
+        splits = [settings.num_players * settings.num_tricks]
+        phases = [0]
+
+    assert sum(splits) == settings.get_seq_length()
+    assert len(splits) == len(phases)
+    assert all(0 <= x < settings.num_phases for x in phases)
+    return splits, phases
+
+
+class BranchedLSTM(nn.Module):
+    def __init__(self, make_lstm: Callable[[], nn.Module], settings: Settings):
+        super().__init__()
+        self.lstms = nn.ModuleList([make_lstm() for _ in range(settings.num_phases)])
+        self.set_splits(settings)
+
+    def set_splits(self, settings):
+        self.splits, self.phases = get_splits_and_phases(settings)
+        # Since this is processing historical values, everything is offset
+        # by 1. We arbitrarily assign the first null value to the first split.
+        self.splits[0] += 1
+        self.splits[-1] -= 1
+
+    def forward(self, x, state, phases, single_step):
+        if single_step:
+            phase = phases[0].item() if state is not None else self.phases[0]
+            lstm = self.lstms[phase]
+            return lstm(x, state)
+
+        x_splits = torch.split(x, self.splits, dim=1)
+        y_splits = []
+        for phase, x_split in zip(self.phases, x_splits):
+            y_split, state = self.lstms[phase](x_split, state)
+            y_splits.append(y_split)
+        y = torch.cat(y_splits, dim=1)
+
+        return y, state
+
+
+class BranchedFF(nn.Module):
+    def __init__(self, make_ff: Callable[[], nn.Module], settings: Settings):
+        super().__init__()
+        self.ffs = nn.ModuleList([make_ff() for _ in range(settings.num_phases)])
+        self.set_splits(settings)
+
+    def set_splits(self, settings):
+        assert settings.use_signals, "Must use signals with BranchedLSTM."
+        splits, phases = get_splits_and_phases(settings)
+
+        self.register_buffer(
+            "phase_mask",
+            torch.zeros(
+                (settings.num_phases, settings.get_seq_length()), dtype=torch.bool
+            ),
+        )
+
+        t = 0
+        for split, phase in zip(splits, phases):
+            self.phase_mask[phase, t : t + split] = True
+            t += split
+        assert t == settings.get_seq_length()
+
+    def forward(self, x, phases):
+        # phases = (N,) or (N, T)
+
+        if len(phases.shape) == 1:
+            phase = phases[0].item()
+            ff = self.ffs[phase]
+            return ff(x)
+
+        y_splits = []
+        for phase in range(len(self.ffs)):
+            x_split = x[:, self.phase_mask[phase]]
+            y_splits.append(self.ffs[phase](x_split))
+
+        y_shape = x.shape[:-1] + (y_splits[0].size(-1),)
+        y = torch.empty(y_shape, device=x.device)
+        for phase in range(len(self.ffs)):
+            y[:, self.phase_mask[phase]] = y_splits[phase]
+
+        return y
 
 
 class HistoryModel(nn.Module):
@@ -31,76 +124,40 @@ class HistoryModel(nn.Module):
         num_layers: int,
         output_dim: int,
         dropout: float,
-        use_layer_norm: bool,
-        use_tasks: bool,
         tasks_embed_dim: int,
-        use_tformer: bool,
-        layer_norm_mode: str,
-        use_phase_mask: bool,
-        embed_sum: bool,
+        phase_branch: bool,
+        settings: Settings,
     ):
         super().__init__()
         self.player_embed = player_embed
         self.trick_embed = trick_embed
         self.card_embed = card_embed
         self.turn_embed = turn_embed
-        self.phase_embed = phase_embed
-        self.embed_sum = embed_sum
-        self.use_tasks = use_tasks
-        self.use_phase_mask = use_phase_mask
-        assert not (embed_sum and use_phase_mask)
+        self.phase_embed = None if phase_branch else phase_embed
+        self.phase_branch = phase_branch
+        input_dim = (4 if phase_branch else 5) * embed_dim + tasks_embed_dim
 
-        input_dim = (
-            1 if embed_sum else 4 if use_phase_mask else 5
-        ) * embed_dim + tasks_embed_dim * use_tasks
-
-        self.use_tformer = use_tformer
-        if use_tformer:
-            self.input_embed = nn.Linear(input_dim, hidden_dim)
-            self.tformer = nn.TransformerDecoder(
-                nn.TransformerDecoderLayer(
-                    d_model=hidden_dim,
-                    nhead=4,
-                    batch_first=True,
-                    dim_feedforward=hidden_dim * 4,
-                    dropout=dropout,
-                    norm_first=True,
-                ),
-                num_layers=num_layers,
-            )
-            self.layer_norm = nn.LayerNorm(hidden_dim) if use_layer_norm else None
-
-            self.register_buffer("memory", torch.zeros(1, 1, hidden_dim))
+        self.layer_norm = nn.LayerNorm(input_dim)
+        make_lstm = lambda: nn.LSTM(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=(dropout if num_layers > 1 else 0.0),
+        )
+        if phase_branch:
+            self.lstm: nn.Module = BranchedLSTM(make_lstm, settings)
         else:
-            self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-            self.lstm = nn.LSTM(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                batch_first=True,
-                dropout=(dropout if num_layers > 1 else 0.0),
-            )
+            self.lstm = make_lstm()
         self.output_dim = output_dim
         self.fc = nn.Linear(hidden_dim, output_dim)
         self.dropout = nn.Dropout(dropout) if dropout else None
         self.state: torch.Tensor | None = None
         self.single_step = False
 
-        assert layer_norm_mode in ["orig", "post", "final"]
-        self.layer_norm_mode = layer_norm_mode
-        self.layer_norm2 = (
-            nn.LayerNorm(hidden_dim if layer_norm_mode == "post" else output_dim)
-            if use_layer_norm and layer_norm_mode in ["post", "final"]
-            else None
-        )
-
     @cached_property
     def hist_params(self):
-        return (
-            list(self.tformer.parameters())
-            if self.use_tformer
-            else list(self.lstm.parameters())
-        )
+        return list(self.lstm.parameters())
 
     def start_single_step(self):
         self.single_step = True
@@ -113,25 +170,22 @@ class HistoryModel(nn.Module):
     def forward(
         self,
         hist_inps: TensorDict,
-        tasks_embed: Tensor | None = None,
+        tasks_embed: Tensor,
     ) -> Tensor:
         player_embed = self.player_embed(hist_inps["player_idxs"])
         trick_embed = self.trick_embed(hist_inps["tricks"])
         card_embed = self.card_embed(hist_inps["cards"])
         turn_embed = self.turn_embed(hist_inps["turns"])
-        phase_embed = self.phase_embed(hist_inps["phases"])
-        if self.embed_sum:
-            inps = [player_embed + trick_embed + card_embed + turn_embed]
-        elif self.use_phase_mask:
-            card_embed = card_embed * F.sigmoid(phase_embed)
-            inps = [player_embed, trick_embed, card_embed, turn_embed]
-        else:
-            inps = [player_embed, trick_embed, card_embed, turn_embed, phase_embed]
-        if self.use_tasks:
-            assert tasks_embed is not None
-            inps.append(tasks_embed)
-        else:
-            assert tasks_embed is None
+        inps = [
+            player_embed,
+            trick_embed,
+            card_embed,
+            turn_embed,
+        ]
+        if not self.phase_branch:
+            phase_embed = cast(nn.Module, self.phase_embed)(hist_inps["phases"])
+            inps.append(phase_embed)
+        inps.append(tasks_embed)
         x = torch.cat(inps, dim=-1)
         if self.single_step:
             assert not self.training
@@ -142,56 +196,25 @@ class HistoryModel(nn.Module):
                 "Forgot to stop_single_step() before going back to multi-step mode."
             )
 
-        if self.use_tformer:
-            x = self.input_embed(x)
+        x = self.layer_norm(x)
 
-            if self.single_step:
-                # F or B, F
-                x = x.unsqueeze(dim=-2)
-                if self.state is not None:
-                    x = torch.cat([self.state, x], dim=-2)
-                self.state = x
+        if self.single_step:
+            x = x.unsqueeze(dim=-2)
 
-            assert len(x.shape) >= 2
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(
-                x.size(-2), device=x.device
-            )
-            x = self.tformer(
-                x,
-                cast(Tensor, self.memory).expand(x.size(0), -1, -1),
-                tgt_mask=tgt_mask,
-                tgt_is_causal=True,
-            )
-
-            if self.single_step:
-                x = x[..., -1, :].squeeze(dim=-2)
-
-            if self.layer_norm:
-                x = self.layer_norm(x)
+        if self.phase_branch:
+            x, state = self.lstm(x, self.state, hist_inps["phases"], self.single_step)
         else:
-            if self.layer_norm:
-                x = self.layer_norm(x)
-
-            if self.single_step:
-                x = x.unsqueeze(dim=-2)
-
             x, state = self.lstm(x, self.state)
 
-            if self.single_step:
-                x = x.squeeze(dim=-2)
+        if self.single_step:
+            x = x.squeeze(dim=-2)
 
-            # Only save state if we are using the model one action
-            # at a time.
-            if self.single_step:
-                self.state = state
-
-        if self.layer_norm_mode == "post":
-            x = cast(nn.LayerNorm, self.layer_norm2)(x)
+        # Only save state if we are using the model one action
+        # at a time.
+        if self.single_step:
+            self.state = state
 
         x = self.fc(x)
-
-        if self.layer_norm_mode == "final":
-            x = cast(nn.LayerNorm, self.layer_norm2)(x)
 
         if self.dropout:
             x = self.dropout(x)
@@ -213,11 +236,7 @@ class BackboneModel(nn.Module):
         num_hidden_layers: int,
         output_dim: int,
         dropout: float,
-        use_layer_norm: bool,
-        use_skip: bool,
-        use_resid: bool,
-        use_final_layer_norm: bool,
-        embed_sum: bool,
+        backbone_no_head: bool,
     ):
         super().__init__()
         self.hist_model = hist_model
@@ -227,50 +246,28 @@ class BackboneModel(nn.Module):
         self.turn_embed = turn_embed
         self.phase_embed = phase_embed
         self.tasks_embed = tasks_embed
-        self.use_skip = use_skip
-        self.use_resid = use_resid
-        self.embed_sum = embed_sum
-        self.output_dim = output_dim
-        if self.use_skip:
-            self.output_dim += self.hist_model.output_dim
+        output_dim = hidden_dim if backbone_no_head else output_dim
+        self.output_dim = output_dim + self.hist_model.output_dim
         input_dim = (
             self.hist_model.output_dim
-            + embed_dim * (1 if embed_sum else 4)
+            + embed_dim * 4
             + self.tasks_embed.output_dim
             + self.hand_embed.output_dim
         )
-        if self.use_resid:
-            assert not self.use_skip
-            self.input_embed: nn.Linear | None = nn.Linear(input_dim, output_dim)
-            self.layer_norm = nn.LayerNorm(output_dim) if use_layer_norm else None
-            self.mlp = MLP(
-                output_dim,
-                hidden_dim,
-                output_dim,
-                num_hidden_layers,
-                dropout=dropout,
-            )
-        else:
-            self.input_embed = None
-            self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
-            self.mlp = MLP(
-                input_dim,
-                hidden_dim,
-                output_dim,
-                num_hidden_layers,
-                dropout=dropout,
-            )
-
-        self.final_layer_norm = (
-            nn.LayerNorm(output_dim) if use_final_layer_norm else None
+        self.layer_norm = nn.LayerNorm(input_dim)
+        self.mlp = MLP(
+            input_dim,
+            hidden_dim,
+            output_dim=(None if backbone_no_head else output_dim),
+            num_hidden_layers=num_hidden_layers,
+            dropout=dropout,
         )
+
+        self.final_layer_norm = None if backbone_no_head else nn.LayerNorm(output_dim)
 
     @cached_property
     def mlp_params(self):
-        ret = list(self.mlp.parameters())
-        if self.input_embed:
-            ret += list(self.input_embed.parameters())
-        return ret
+        return list(self.mlp.parameters())
 
     def start_single_step(self):
         self.hist_model.start_single_step()
@@ -293,60 +290,26 @@ class BackboneModel(nn.Module):
 
         hist_embed: Tensor = self.hist_model(
             hist_inps=hist_inps,
-            tasks_embed=(tasks_embed if self.hist_model.use_tasks else None),
+            tasks_embed=tasks_embed,
         )
         hand_embed: Tensor = self.hand_embed(private_inps["hand"])
         player_embed = self.player_embed(private_inps["player_idx"])
         trick_embed = self.trick_embed(private_inps["trick"])
         turn_embed = self.turn_embed(private_inps["turn"])
         phase_embed = self.phase_embed(private_inps["phase"])
-        if self.embed_sum:
-            private_embed = player_embed + trick_embed + turn_embed + phase_embed
-        else:
-            private_embed = torch.cat(
-                [player_embed, trick_embed, turn_embed, phase_embed], dim=-1
-            )
+        private_embed = torch.cat(
+            [player_embed, trick_embed, turn_embed, phase_embed], dim=-1
+        )
 
         inps = [hist_embed, private_embed, tasks_embed, hand_embed]
         x = torch.cat(inps, dim=-1)
-
-        if self.use_resid:
-            x = cast(nn.Linear, self.input_embed)(x)
-
-        if self.layer_norm:
-            x = self.layer_norm(x)
-
-        if self.use_resid:
-            x = x + self.mlp(x)
-        else:
-            x = self.mlp(x)
-
+        x = self.layer_norm(x)
+        x = self.mlp(x)
         if self.final_layer_norm:
             x = self.final_layer_norm(x)
-
-        if self.use_skip:
-            x = torch.cat([x, hist_embed], dim=-1)
+        x = torch.cat([x, hist_embed], dim=-1)
 
         return x
-
-
-def num_actions(settings):
-    return settings.num_cards * (2 if settings.use_signals else 1) + (
-        1 if settings.use_signals else 0
-    )
-
-
-def to_action_idx(valid_actions, phase, settings):
-    rank = valid_actions[..., 0]
-    suit = valid_actions[..., 1]
-    phase = phase.unsqueeze(-1).expand(rank.shape)
-
-    action_idx = phase * settings.num_cards + suit * settings.side_suit_length + rank
-    return torch.where(
-        rank == -1,
-        -1,
-        torch.where(suit == settings.num_suits, 2 * settings.num_cards, action_idx),
-    )
 
 
 class PolicyHead(nn.Module):
@@ -358,53 +321,45 @@ class PolicyHead(nn.Module):
         hidden_dim: int,
         num_hidden_layers: int,
         dropout: float,
-        use_layer_norm: bool,
         query_dim: int,
-        num_tricks: int,
         signal_prior: str,
-        sep_embed: bool,
-        use_phase_action_mask: bool,
+        phase_branch: bool,
         settings: Settings,
     ):
         super().__init__()
 
-        self.sep_embed = sep_embed
-        self.use_phase_action_mask = use_phase_action_mask
-        if sep_embed:
-            self.key_model: nn.Module = PaddedEmbed(
-                num_actions(settings),
-                query_dim,
-                dropout=dropout,
-                embed_type="embed",
-            )
-            self.key_layer_norm = nn.LayerNorm(query_dim) if use_layer_norm else None
-            self.settings = settings
+        self.card_embed = card_embed
+        self.phase_embed = None if phase_branch else phase_embed
+        self.phase_branch = phase_branch
+        key_input_dim = card_embed.output_dim + (
+            0 if phase_branch else phase_embed.output_dim
+        )
+        self.key_layer_norm = nn.LayerNorm(key_input_dim)
+        make_key_model = lambda: MLP(
+            key_input_dim,
+            hidden_dim,
+            query_dim,
+            num_hidden_layers=num_hidden_layers,
+            dropout=dropout,
+        )
+        if phase_branch:
+            self.key_model: nn.Module = BranchedFF(make_key_model, settings)
         else:
-            self.card_embed = card_embed
-            self.phase_embed = phase_embed
-            key_input_dim = card_embed.output_dim + (
-                0 if use_phase_action_mask else phase_embed.output_dim
-            )
-            self.key_layer_norm = (
-                nn.LayerNorm(key_input_dim) if use_layer_norm else None
-            )
-            self.key_model = MLP(
-                key_input_dim,
-                hidden_dim,
-                query_dim,
-                num_hidden_layers=num_hidden_layers,
-                dropout=dropout,
-            )
+            self.key_model = make_key_model()
         self.query_dim = query_dim
-        self.query_model = nn.Linear(query_input_dim, query_dim)
+        make_query_model = lambda: nn.Linear(query_input_dim, query_dim)
+        if phase_branch:
+            self.query_model: nn.Module = BranchedFF(make_query_model, settings)
+        else:
+            self.query_model = make_query_model()
         self.log_softmax = nn.LogSoftmax(dim=-1)
 
         self.use_nosignal = settings.use_nosignal
         if settings.use_nosignal:
             # pre-cache p_signal
             assert signal_prior in ["exp", "lin"]
-            trick = torch.arange(num_tricks).float()
-            num_tricks_left = num_tricks - trick
+            trick = torch.arange(settings.num_tricks).float()
+            num_tricks_left = settings.num_tricks - trick
             if signal_prior == "exp":
                 decay = 0.6
                 self.register_buffer(
@@ -426,34 +381,26 @@ class PolicyHead(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """valid_actions=(...,A,2)"""
 
-        if self.sep_embed:
-            action_idx = to_action_idx(valid_actions, phase, self.settings)
-            key = self.key_model(action_idx)
-            if self.key_layer_norm:
-                key = self.key_layer_norm(key)
+        valid_actions_embed = self.card_embed(valid_actions)
+        key_inputs = [valid_actions_embed]
+        if not self.phase_branch:
+            phase_embed = cast(nn.Module, self.phase_embed)(phase)
+            phase_embed = phase_embed.unsqueeze(-2).expand(
+                valid_actions_embed.shape[:-1] + (phase_embed.shape[-1],)
+            )
+            key_inputs.append(phase_embed)
+        key_input = torch.cat(key_inputs, dim=-1)
+        key_input = self.key_layer_norm(key_input)
+        if self.phase_branch:
+            key = self.key_model(key_input, phase)
         else:
-            valid_actions_embed = self.card_embed(valid_actions)
-            if self.use_phase_action_mask:
-                key_input = valid_actions_embed
-            else:
-                phase_embed = self.phase_embed(phase)
-                phase_embed = phase_embed.unsqueeze(-2).expand(
-                    valid_actions_embed.shape[:-1] + (phase_embed.shape[-1],)
-                )
-                key_input = torch.cat([valid_actions_embed, phase_embed], dim=-1)
-
-            if self.key_layer_norm:
-                key_input = self.key_layer_norm(key_input)
             key = self.key_model(key_input)
 
-            if self.use_phase_action_mask:
-                phase_embed = self.phase_embed(phase)
-                phase_mask = F.sigmoid(phase_embed)
-                phase_mask = phase_mask.unsqueeze(-2).expand(key.shape)
-                key = key * phase_mask
-
+        if self.phase_branch:
+            query = self.query_model(backbone_embed, phase)
+        else:
+            query = self.query_model(backbone_embed)
         # (..., A)
-        query = self.query_model(backbone_embed)
         attn_score = torch.einsum("...q,...vq->...v", query, key) / self.query_dim**0.5
         attn_score = attn_score.masked_fill(
             valid_actions[..., 0] == -1,
@@ -584,19 +531,15 @@ def get_models(
         embed_models["trick"],
         embed_models["card"],
         embed_models["turn"],
-        embed_models["hist_phase_mask" if hp.hist_use_phase_mask else "phase"],
+        embed_models["phase"],
         hp.embed_dim,
         hp.hist_hidden_dim,
         hp.hist_num_layers,
         hp.hist_output_dim,
         hp.hist_dropout,
-        hp.hist_use_layer_norm,
-        hp.hist_use_tasks,
         hp.tasks_embed_dim,
-        hp.hist_use_tformer,
-        hp.hist_layer_norm_mode,
-        hp.hist_use_phase_mask,
-        hp.hist_embed_sum,
+        hp.hist_phase_branch,
+        settings,
     )
     backbone_model = BackboneModel(
         hist_model,
@@ -611,11 +554,7 @@ def get_models(
         hp.backbone_num_hidden_layers,
         hp.backbone_output_dim,
         hp.backbone_dropout,
-        hp.backbone_use_layer_norm,
-        hp.backbone_use_skip,
-        hp.backbone_use_resid,
-        hp.backbone_use_final_layer_norm,
-        hp.backbone_embed_sum,
+        hp.backbone_no_head,
     )
     if hp.aux_info_coef:
         aux_info_head = AuxInfoHead(
@@ -629,21 +568,13 @@ def get_models(
     policy_head = PolicyHead(
         backbone_model.output_dim,
         cast(CardModel, embed_models["card"]),
-        cast(
-            PaddedEmbed,
-            embed_models[
-                "phase_action_mask" if hp.policy_use_phase_action_mask else "phase"
-            ],
-        ),
+        cast(PaddedEmbed, embed_models["phase"]),
         hp.policy_hidden_dim,
         hp.policy_num_hidden_layers,
         hp.policy_dropout,
-        hp.policy_use_layer_norm,
         hp.policy_query_dim,
-        settings.num_tricks,
         hp.policy_signal_prior,
-        hp.policy_sep_embed,
-        hp.policy_use_phase_action_mask,
+        hp.policy_phase_branch,
         settings,
     )
     value_head = ValueHead(

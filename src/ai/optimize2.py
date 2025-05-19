@@ -2,112 +2,78 @@ import re
 import shutil
 import subprocess
 import sys
-from functools import cache, partial
+from functools import partial
 from pathlib import Path
 
 import click
-import numpy as np
 import optuna
 from loguru import logger
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler  # bayesian sampler
 from optuna.trial import TrialState
 
+from src.ai.hyperparams import Hyperparams
+
 EVAL_REGEX = re.compile(r"Round (\d+):.*win_rate=([-\d\.]+)")
 MODEL_SIZE_REGEX = re.compile(r"Num Parameters: pv=([\d\.e\+]+)")
 
-HPARAMS = {
-    "embed_dim": dict(min=32, max=128, n=8, step=16, log=True),
-    "tasks_hidden_dim": dict(min="embed_dim", max=128, n=8, step=16, log=True),
-    "tasks_embed_dim": dict(min="embed_dim", max="tasks_hidden_dim", n=8, step=16),
-    "hand_hidden_dim": dict(min="embed_dim", max=128, n=8, step=16, log=True),
-    "hand_embed_dim": dict(min="embed_dim", max="hand_hidden_dim", n=8, step=16),
-    "hist_hidden_dim": dict(min="embed_dim", max=256, n=8, step=16, log=True),
-    "hist_output_dim": dict(min="embed_dim", max="hist_hidden_dim", n=8, step=16),
-    "backbone_hidden_dim": dict(min=256, max=1024, n=8, step=64, log=True),
-    "backbone_output_dim": dict(min=8, max=64, n=8, step=8),
-    "policy_hidden_dim": dict(min="embed_dim", max=256, n=8, step=16, log=True),
-    "policy_query_dim": dict(min=8, max="policy_hidden_dim", n=8, step=8),
-    "lr": dict(min=1e-4, max=2e-3, n=8, step=1e-4, log=True),
-    "embed_dropout": dict(min=0.0, max=0.06, n=8, step=0.01),
-    "hand_dropout": dict(min=0.0, max=0.06, n=8, step=0.01),
-    "tasks_dropout": dict(min=0.0, max=0.06, n=8, step=0.01),
-    "hist_dropout": dict(min=0.0, max=0.06, n=8, step=0.01),
-    "backbone_dropout": dict(min=0.0, max=0.06, n=8, step=0.01),
-    "policy_dropout": dict(min=0.0, max=0.06, n=8, step=0.01),
-    "weight_decay": dict(min=1e-4, max=1e-2, n=8, step=1e-3, log=True),
-    "gae_lambda": dict(min=0.9, max=0.99, n=8, step=0.01),
-    "grad_norm_clip": dict(min=0.1, max=10, n=8, step=0.1, log=True),
-    "hist_num_layers": dict(choices=[1, 2]),
-    "aux_info_coef": dict(choices=[0, 0.01, 0.1]),
-}
-
-
-@cache
-def get_choices(name):
-    params = HPARAMS[name]
-    if "choices" in params:
-        return params["choices"]
-
-    min = (
-        HPARAMS[params["min"]]["min"]
-        if isinstance(params["min"], str)
-        else params["min"]
-    )
-    max = (
-        HPARAMS[params["max"]]["max"]
-        if isinstance(params["max"], str)
-        else params["max"]
-    )
-    n = params["n"]
-    step = params["step"]
-    log = params.get("log", False)
-    choices = np.geomspace(min, max, n) if log else np.linspace(min, max, n)
-    choices = [round(x / step) * step for x in choices]
-    if isinstance(step, int):
-        choices = [int(x) for x in choices]
-
-    new_choices = []
-    for x in choices:
-        if new_choices and abs(x - new_choices[-1]) <= 1e-8:
-            continue
-        new_choices.append(x)
-
-    return new_choices
-
-
-@cache
-def get_dist_func(name):
-    choices = get_choices(name)
-
-    def dist_func(val1, val2):
-        new_val1 = min(choices, key=lambda x: abs(val1 - x))
-        new_val2 = min(choices, key=lambda x: abs(val2 - x))
-        assert abs(val1 - new_val1) <= 1e-8
-        assert abs(val2 - new_val2) <= 1e-8
-        return abs(choices.index(new_val1) - choices.index(new_val2))
-
-    return dist_func
-
-
-def suggest_categorical(
-    trial,
-    name,
-):
-    # params = HPARAMS[name]
-    choices = get_choices(name)
-    # no support for categorical dynamic value spaces right now.
-    # if isinstance(params.get("min"), str):
-    #     choices = [x for x in choices if x >= trial.params[params["min"]]]
-    # if isinstance(params.get("max"), str):
-    #     choices = [x for x in choices if x <= trial.params[params["max"]]]
-
-    trial.suggest_categorical(name, choices)
+HPARAMS = [
+    "embed_dim",
+    "tasks_hidden_dim",
+    "tasks_embed_dim",
+    "hand_hidden_dim",
+    "hand_embed_dim",
+    "hist_hidden_dim",
+    "hist_output_dim",
+    "backbone_hidden_dim",
+    "backbone_output_dim",
+    "policy_hidden_dim",
+    "policy_query_dim",
+    "lr",
+    "embed_dropout",
+    "hand_dropout",
+    "tasks_dropout",
+    "hist_dropout",
+    "backbone_dropout",
+    "policy_dropout",
+    "weight_decay",
+    "gae_lambda",
+    "grad_norm_clip",
+    "hist_num_layers",
+]
 
 
 def objective(trial: optuna.Trial, outdir: Path, num_rounds: int | None) -> float:
-    for name in HPARAMS:
-        suggest_categorical(trial, name)
+    embed_dim = trial.suggest_int("embed_dim", 32, 128, step=16)
+    tasks_hidden_dim = trial.suggest_int("tasks_hidden_dim", embed_dim, 128, step=16)
+    trial.suggest_int("tasks_embed_dim", embed_dim, tasks_hidden_dim, step=16)
+    hand_hidden_dim = trial.suggest_int("hand_hidden_dim", embed_dim, 128, step=16)
+    trial.suggest_int("hand_embed_dim", embed_dim, hand_hidden_dim, step=16)
+    hist_hidden_dim = trial.suggest_int("hist_hidden_dim", embed_dim, 256, step=16)
+    trial.suggest_int("hist_output_dim", embed_dim, hist_hidden_dim, step=16)
+    backbone_hidden_dim = trial.suggest_int(
+        "backbone_hidden_dim", embed_dim, 1024, step=16
+    )
+    trial.suggest_int("backbone_output_dim", 8, min(backbone_hidden_dim, 128), step=8)
+    policy_hidden_dim = trial.suggest_int("policy_hidden_dim", embed_dim, 256, step=16)
+    trial.suggest_int("policy_query_dim", 8, policy_hidden_dim, step=8)
+
+    trial.suggest_float("lr", 1e-4, 2e-3, log=True)
+
+    for name in [
+        "embed_dropout",
+        "hand_dropout",
+        "tasks_dropout",
+        "hist_dropout",
+        "backbone_dropout",
+        "policy_dropout",
+    ]:
+        trial.suggest_float(name, 0.0, 0.06)
+
+    trial.suggest_float("weight_decay", 1e-4, 1e-2, log=True)
+    trial.suggest_float("gae_lambda", 0.9, 0.99)
+    trial.suggest_float("grad_norm_clip", 0.1, 10, log=True)
+    trial.suggest_int("hist_num_layers", 1, 2)
 
     hp_str = ",".join(f"{k}={v}" for k, v in trial.params.items())
     if num_rounds is not None:
@@ -240,13 +206,10 @@ def main(
     logger.add(outdir / "optimize.log")
 
     logger.info("Creating study")
-    categorical_dists = {name: get_dist_func(name) for name in HPARAMS}
     study = optuna.create_study(
         study_name=study_name,
         directions=["maximize"],
-        sampler=TPESampler(
-            multivariate=True, categorical_distance_func=categorical_dists
-        ),
+        sampler=TPESampler(multivariate=True),
         pruner=MedianPruner(
             n_startup_trials=10,
             n_min_trials=10,
@@ -257,8 +220,8 @@ def main(
         load_if_exists=True,
     )
     # Doesn't fit into search space step unfortunately ...
-    # hp = Hyperparams()
-    # study.enqueue_trial({k: getattr(hp, k) for k in HPARAMS})
+    hp = Hyperparams()
+    study.enqueue_trial({k: getattr(hp, k) for k in HPARAMS})
     logger.info("Optimizing")
     study.optimize(
         partial(objective, outdir=outdir, num_rounds=num_rounds),
