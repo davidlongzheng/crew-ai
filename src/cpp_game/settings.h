@@ -5,12 +5,15 @@
 #include <optional>
 #include <set>
 #include <array>
+#include <stdexcept>
 
 #include "types.h"
 
 // Game settings struct representing the configuration of a game
 struct Settings
 {
+    Settings(int num_players_, int num_side_suits_, bool use_trump_suit_, int side_suit_length_, int trump_suit_length_, bool use_signals_, bool cheating_signal_, bool single_signal_, std::string bank_, std::string task_distro_, std::vector<int> task_idxs_, std::optional<int> min_difficulty_, std::optional<int> max_difficulty_, std::optional<int> max_num_tasks_, bool use_drafting_, int num_draft_tricks_, double task_bonus_, double win_bonus_);
+
     // Default values match Python implementation
     int num_players = 4;
     int num_side_suits = 4;
@@ -18,8 +21,8 @@ struct Settings
     int side_suit_length = 9;
     int trump_suit_length = 4;
     bool use_signals = true;
-    bool single_signal = false;
     bool cheating_signal = false;
+    bool single_signal = false;
 
     std::string bank = "easy";
     // In fixed, tasks are distributed according to the order of tasks,
@@ -33,6 +36,9 @@ struct Settings
     std::optional<int> max_difficulty;
     std::optional<int> max_num_tasks;
 
+    bool use_drafting = false;
+    int num_draft_tricks = 3;
+
     // Task bonus is how much of a bonus you get for a fully completed task
     // vs a partially completed task.
     // Partial points range from [-1, 1] and task bonus is {-task_bonus, 0, task_bonus}
@@ -45,21 +51,20 @@ struct Settings
     // from [-1, 1]
     double win_bonus = 1.0;
 
-    // Methods
-    int num_tricks() const
-    {
-        return num_cards() / num_players;
-    }
-
-    int max_hand_size() const
-    {
-        return (num_cards() - 1) / num_players + 1;
-    }
-
-    int num_cards() const
-    {
-        return num_side_suits * side_suit_length + (use_trump_suit ? trump_suit_length : 0);
-    }
+    // cache some common values.
+    int num_tricks;
+    int max_hand_size;
+    int num_cards;
+    std::vector<int> suits;
+    const std::vector<std::tuple<std::string, std::string, int>> &task_defs;
+    int num_task_defs;
+    int max_num_actions;
+    bool use_nosignal;
+    int max_suit_length;
+    int num_suits;
+    int num_phases;
+    int resolved_max_num_tasks;
+    int seq_length;
 
     int get_suit_idx(int suit) const
     {
@@ -93,20 +98,6 @@ struct Settings
         }
     }
 
-    std::vector<int> get_suits() const
-    {
-        std::vector<int> ret;
-        for (int i = 0; i < num_side_suits; ++i)
-        {
-            ret.push_back(i);
-        }
-        if (use_trump_suit)
-        {
-            ret.push_back(TRUMP_SUIT_NUM);
-        }
-        return ret;
-    }
-
     int get_suit_length(int suit) const
     {
         if (suit < num_side_suits)
@@ -121,44 +112,6 @@ struct Settings
         {
             throw std::runtime_error("Invalid suit");
         }
-    }
-
-    bool use_nosignal() const
-    {
-        return use_signals && !single_signal && !cheating_signal;
-    }
-
-    int max_suit_length() const
-    {
-        return use_trump_suit ? std::max(side_suit_length, trump_suit_length) : side_suit_length;
-    }
-
-    int num_suits() const
-    {
-        return num_side_suits + (use_trump_suit ? 1 : 0);
-    }
-
-    int num_phases() const
-    {
-        return 1 + (use_signals ? 1 : 0);
-    }
-
-    int get_max_num_tasks() const
-    {
-        if (!task_idxs.empty())
-        {
-            return task_idxs.size();
-        }
-        else
-        {
-            return max_num_tasks.value_or(0);
-        }
-    }
-
-    // Number of moves in a game
-    int get_seq_length() const
-    {
-        return num_players * (num_tricks() * (use_signals && !single_signal ? 2 : 1) + (single_signal ? 1 : 0));
     }
 
     // Validation
@@ -202,6 +155,14 @@ struct Settings
             return false;
         }
 
+        if (use_drafting)
+        {
+            if (num_draft_tricks == 0)
+                return false;
+            if (num_draft_tricks * num_players < resolved_max_num_tasks)
+                return false;
+        }
+
         if (has_min_difficulty && has_max_difficulty &&
             min_difficulty.value() >= max_difficulty.value())
         {
@@ -222,6 +183,8 @@ struct Settings
                ", use_signals=" + std::to_string(use_signals) +
                ", single_signal=" + std::to_string(single_signal) +
                ", cheating_signal=" + std::to_string(cheating_signal) +
+               ", use_drafting=" + std::to_string(use_drafting) +
+               ", num_draft_tricks=" + std::to_string(num_draft_tricks) +
                ", bank=" + bank +
                ", task_distro=" + task_distro +
                ", task_bonus=" + std::to_string(task_bonus) +

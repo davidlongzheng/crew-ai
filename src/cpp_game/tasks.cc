@@ -261,7 +261,7 @@ void ConsecCond::on_trick_end(const State &state)
         }
         else
         {
-            partial_value = static_cast<double>(state.trick + 1) / static_cast<double>(settings.num_tricks());
+            partial_value = static_cast<double>(state.trick + 1) / static_cast<double>(settings.num_tricks);
         }
     }
     else
@@ -336,7 +336,7 @@ std::shared_ptr<Condition> parse_token(const std::string &token, const Settings 
         int trick;
         if (t == "-1")
         {
-            trick = settings.num_tricks() - 1;
+            trick = settings.num_tricks - 1;
         }
         else
         {

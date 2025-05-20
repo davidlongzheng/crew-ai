@@ -4,7 +4,7 @@ import cpp_game
 
 from .settings import Settings
 from .state import State
-from .tasks import AssignedTask, get_task_defs
+from .tasks import AssignedTask
 from .types import TRUMP_SUIT_NUM, Action, Card, Phase, Signal, SignalValue
 from .utils import split_by_suit
 
@@ -50,8 +50,7 @@ class Engine:
 
         return hands
 
-    def gen_tasks(self, leader: int, rng: cpp_game.Rng) -> list[list[AssignedTask]]:
-        task_defs = get_task_defs(self.settings.bank)
+    def gen_tasks(self, rng: cpp_game.Rng) -> list[int]:
         if self.settings.task_idxs:
             task_idxs = list(self.settings.task_idxs)
         else:
@@ -70,10 +69,10 @@ class Engine:
                     len(task_idxs) < self.settings.max_num_tasks
                     and cur_difficulty < difficulty
                 ):
-                    task_idx = rng.randint(0, len(task_defs) - 1)
+                    task_idx = rng.randint(0, len(self.settings.task_defs) - 1)
                     if task_idx in task_idxs:
                         continue
-                    task_diff = task_defs[task_idx][2]
+                    task_diff = self.settings.task_defs[task_idx][2]
                     if cur_difficulty + task_diff <= difficulty:
                         task_idxs.append(task_idx)
                         cur_difficulty += task_diff
@@ -81,6 +80,11 @@ class Engine:
                 if cur_difficulty == difficulty:
                     break
 
+        return task_idxs
+
+    def assign_tasks(
+        self, leader: int, rng: cpp_game.Rng, task_idxs: list[int]
+    ) -> list[list[AssignedTask]]:
         assigned_tasks: list[list[AssignedTask]] = [
             [] for _ in range(self.settings.num_players)
         ]
@@ -92,10 +96,8 @@ class Engine:
                 start_player = leader
 
             for i, _task_idx in enumerate(task_idxs):
-                if _task_idx is None:
-                    continue
                 player = (start_player + i) % self.settings.num_players
-                formula, desc, difficulty = task_defs[_task_idx]
+                formula, desc, difficulty = self.settings.task_defs[_task_idx]
                 assigned_tasks[player].append(
                     AssignedTask(
                         formula, desc, difficulty, _task_idx, player, self.settings
@@ -104,10 +106,8 @@ class Engine:
         else:
             assert self.settings.task_distro == "random"
             for i, _task_idx in enumerate(task_idxs):
-                if _task_idx is None:
-                    continue
                 player = rng.randint(0, self.settings.num_players - 1)
-                formula, desc, difficulty = task_defs[_task_idx]
+                formula, desc, difficulty = self.settings.task_defs[_task_idx]
                 assigned_tasks[player].append(
                     AssignedTask(
                         formula, desc, difficulty, _task_idx, player, self.settings
@@ -127,8 +127,22 @@ class Engine:
             in hand
             for hand in hands
         ].index(True)
-        phase: Phase = "signal" if self.settings.use_signals else "play"
-        assigned_tasks = self.gen_tasks(leader, rng)
+        phase: Phase = (
+            "draft"
+            if self.settings.use_drafting
+            else "signal"
+            if self.settings.use_signals
+            else "play"
+        )
+        task_idxs = self.gen_tasks(rng)
+        if self.settings.use_drafting:
+            assigned_tasks: list[list[AssignedTask]] = [
+                [] for _ in range(self.settings.num_players)
+            ]
+            unassigned_task_idxs = task_idxs.copy()
+        else:
+            assigned_tasks = self.assign_tasks(leader, rng, task_idxs)
+            unassigned_task_idxs = []
 
         self.state = State(
             num_players=self.settings.num_players,
@@ -143,6 +157,8 @@ class Engine:
             past_tricks=[],
             signals=[None for _ in range(self.settings.num_players)],
             trick_winner=None,
+            task_idxs=task_idxs,
+            unassigned_task_idxs=unassigned_task_idxs,
             assigned_tasks=assigned_tasks,
             status="unresolved",
             value=0.0,
@@ -155,8 +171,49 @@ class Engine:
         )
         return winner
 
+    def num_drafts_left(self):
+        tot = self.settings.num_draft_tricks * self.settings.num_players
+        num = self.settings.num_players * self.state.trick + self.state.get_turn()
+        return tot - num
+
     def move(self, action: Action) -> float:
-        if self.state.phase == "signal":
+        if self.state.phase == "draft":
+            assert self.settings.use_drafting
+            assert action.player == self.state.cur_player
+            assert action.type in ["draft", "nodraft"], action.type
+
+            if action.type == "draft":
+                assert action.task_idx in self.state.unassigned_task_idxs
+                self.state.unassigned_task_idxs.remove(action.task_idx)
+                formula, desc, difficulty = self.settings.task_defs[action.task_idx]
+                self.state.assigned_tasks[self.state.cur_player].append(
+                    AssignedTask(
+                        formula,
+                        desc,
+                        difficulty,
+                        action.task_idx,
+                        self.state.cur_player,
+                        self.settings,
+                    )
+                )
+                assert len(self.state.unassigned_task_idxs) + sum(
+                    len(x) for x in self.state.assigned_tasks
+                ) == len(self.state.task_idxs)
+            else:
+                assert len(self.state.unassigned_task_idxs) < self.num_drafts_left()
+
+            self.state.actions.append(action)
+            self.state.cur_player = self.state.get_next_player()
+            if self.state.cur_player == self.state.leader:
+                self.state.trick += 1
+
+                if self.state.trick == self.settings.num_draft_tricks:
+                    assert len(self.state.unassigned_task_idxs) == 0
+                    self.state.trick = 0
+                    self.state.phase = "signal" if self.settings.use_signals else "play"
+
+            return 0.0
+        elif self.state.phase == "signal":
             assert self.settings.use_signals
             assert action.player == self.state.cur_player
             player_hand = self.state.hands[self.state.cur_player]
@@ -266,6 +323,7 @@ class Engine:
         if self.state.phase == "end":
             assert self.state.status != "unresolved"
 
+        assert self.state.phase != "draft"
         prev_value = self.state.value
         avg_tasks_value = sum(
             task.value * task.difficulty
@@ -290,13 +348,24 @@ class Engine:
         return reward
 
     def valid_actions(self) -> list[Action]:
-        if self.state.phase == "signal":
-            assert self.settings.use_signals
+        if self.state.phase == "draft":
+            assert self.settings.use_drafting
             ret: list[Action] = []
-            if not self.settings.single_signal and not self.settings.cheating_signal:
+            if len(self.state.unassigned_task_idxs) < self.num_drafts_left():
+                ret.append(Action(player=self.state.cur_player, type="nodraft"))
+
+            for task_idx in self.state.unassigned_task_idxs:
                 ret.append(
-                    Action(player=self.state.cur_player, type="nosignal", card=None)
+                    Action(
+                        player=self.state.cur_player, type="draft", task_idx=task_idx
+                    )
                 )
+            return ret
+        elif self.state.phase == "signal":
+            assert self.settings.use_signals
+            ret = []
+            if not self.settings.single_signal and not self.settings.cheating_signal:
+                ret.append(Action(player=self.state.cur_player, type="nosignal"))
             if (
                 self.state.signals[self.state.cur_player] is not None
                 and not self.settings.cheating_signal

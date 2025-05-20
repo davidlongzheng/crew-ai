@@ -27,8 +27,8 @@ struct Engine
     std::vector<std::vector<Card>> gen_hands(Rng &rng) const;
 
     // Generates tasks for all players.
-    std::vector<std::vector<AssignedTask>> gen_tasks(
-        int leader, Rng &rng) const;
+    std::vector<int> gen_tasks(Rng &rng) const;
+    std::vector<std::vector<AssignedTask>> assign_tasks(int leader, Rng &rng, std::vector<int> &task_idxs) const;
 
     // Resets the game state with an optional seed.
     void reset_state(std::optional<int> seed = std::nullopt);
@@ -36,6 +36,9 @@ struct Engine
     // Calculates the winner of a trick based on the active cards.
     int calc_trick_winner(
         const std::vector<std::pair<Card, int>> &active_cards) const;
+
+    // Returns the number of drafts left.
+    int num_drafts_left() const;
 
     // Makes a move with the given action and returns the reward.
     double move(const Action &action);

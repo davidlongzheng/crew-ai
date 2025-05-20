@@ -30,10 +30,11 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind Action class
     py::class_<Action>(m, "Action")
-        .def(py::init<int, ActionType, const std::optional<Card> &>())
+        .def(py::init<int, ActionType, const std::optional<Card> &, std::optional<int>>())
         .def_readwrite("player", &Action::player)
         .def_readwrite("type", &Action::type)
         .def_readwrite("card", &Action::card)
+        .def_readwrite("task_idx", &Action::task_idx)
         .def("__str__", &Action::to_string)
         .def("__repr__", &Action::to_string)
         .def(py::self == py::self)
@@ -52,7 +53,13 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind Settings class
     py::class_<Settings>(m, "Settings")
-        .def(py::init<>())
+        .def(py::init<int, int, bool, int, int, bool, bool, bool, std::string, std::string, std::vector<int>, std::optional<int>, std::optional<int>, std::optional<int>, bool, int, double, double>(),
+             py::arg("num_players_"), py::arg("num_side_suits_"), py::arg("use_trump_suit_"),
+             py::arg("side_suit_length_"), py::arg("trump_suit_length_"), py::arg("use_signals_"),
+             py::arg("single_signal_"), py::arg("cheating_signal_"), py::arg("bank_"),
+             py::arg("task_distro_"), py::arg("task_idxs_"), py::arg("min_difficulty_"),
+             py::arg("max_difficulty_"), py::arg("max_num_tasks_"), py::arg("use_drafting_"),
+             py::arg("num_draft_tricks_"), py::arg("task_bonus_"), py::arg("win_bonus_"))
         .def_readwrite("num_players", &Settings::num_players)
         .def_readwrite("num_side_suits", &Settings::num_side_suits)
         .def_readwrite("use_trump_suit", &Settings::use_trump_suit)
@@ -67,17 +74,25 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("min_difficulty", &Settings::min_difficulty)
         .def_readwrite("max_difficulty", &Settings::max_difficulty)
         .def_readwrite("max_num_tasks", &Settings::max_num_tasks)
+        .def_readwrite("use_drafting", &Settings::use_drafting)
+        .def_readwrite("num_draft_tricks", &Settings::num_draft_tricks)
         .def_readwrite("task_bonus", &Settings::task_bonus)
         .def_readwrite("win_bonus", &Settings::win_bonus)
-        .def("num_tricks", &Settings::num_tricks)
-        .def("max_hand_size", &Settings::max_hand_size)
+        .def_readonly("num_tricks", &Settings::num_tricks)
+        .def_readonly("max_hand_size", &Settings::max_hand_size)
+        .def_readonly("num_cards", &Settings::num_cards)
+        .def_readonly("suits", &Settings::suits)
+        .def_readonly("num_task_defs", &Settings::num_task_defs)
+        .def_readonly("max_num_actions", &Settings::max_num_actions)
+        .def_readonly("use_nosignal", &Settings::use_nosignal)
+        .def_readonly("max_suit_length", &Settings::max_suit_length)
+        .def_readonly("num_suits", &Settings::num_suits)
+        .def_readonly("num_phases", &Settings::num_phases)
+        .def_readonly("resolved_max_num_tasks", &Settings::resolved_max_num_tasks)
+        .def_readonly("seq_length", &Settings::seq_length)
         .def("get_suit_idx", &Settings::get_suit_idx)
-        .def("get_suits", &Settings::get_suits)
+        .def("get_suit", &Settings::get_suit)
         .def("get_suit_length", &Settings::get_suit_length)
-        .def("max_suit_length", &Settings::max_suit_length)
-        .def("num_suits", &Settings::num_suits)
-        .def("num_phases", &Settings::num_phases)
-        .def("get_max_num_tasks", &Settings::get_max_num_tasks)
         .def("validate", &Settings::validate)
         .def("to_string", &Settings::to_string)
         .def("__str__", &Settings::to_string)
@@ -85,14 +100,7 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind State class
     py::class_<State>(m, "State")
-        .def(py::init<int, Phase, const std::vector<std::vector<Card>> &,
-                      const std::vector<Action> &, int, int, int, int,
-                      const std::vector<std::pair<Card, int>> &,
-                      const std::vector<std::pair<std::vector<Card>, int>> &,
-                      const std::vector<std::optional<Signal>> &,
-                      const std::optional<int> &,
-                      const std::vector<std::vector<AssignedTask>> &,
-                      Status, double>())
+        .def(py::init<>())
         .def_readwrite("num_players", &State::num_players)
         .def_readwrite("phase", &State::phase)
         .def_readwrite("hands", &State::hands)
@@ -105,6 +113,8 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("past_tricks", &State::past_tricks)
         .def_readwrite("signals", &State::signals)
         .def_readwrite("trick_winner", &State::trick_winner)
+        .def_readonly("task_idxs", &State::task_idxs)
+        .def_readonly("unassigned_task_idxs", &State::unassigned_task_idxs)
         .def_readonly("assigned_tasks", &State::assigned_tasks)
         .def_readwrite("status", &State::status)
         .def_readwrite("value", &State::value)
@@ -137,6 +147,7 @@ PYBIND11_MODULE(cpp_game, m)
     py::enum_<Phase>(m, "Phase")
         .value("signal", Phase::kSignal)
         .value("play", Phase::kPlay)
+        .value("draft", Phase::kDraft)
         .value("end", Phase::kEnd)
         .export_values();
 
@@ -268,7 +279,9 @@ PYBIND11_MODULE(cpp_game, m)
     py::enum_<ActionType>(m, "ActionType")
         .value("play", ActionType::kPlay)
         .value("signal", ActionType::kSignal)
-        .value("nosignal", ActionType::kNoSignal);
+        .value("nosignal", ActionType::kNoSignal)
+        .value("draft", ActionType::kDraft)
+        .value("nodraft", ActionType::kNoDraft);
 
     py::enum_<SignalValue>(m, "SignalValue")
         .value("singleton", SignalValue::kSingleton)
@@ -278,12 +291,12 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind MoveInputs struct
     py::class_<MoveInputs>(m, "MoveInputs")
-        .def(py::init<int, int, int>())
-        .def_readwrite("hist_player_idxs", &MoveInputs::hist_player_idxs)
-        .def_readwrite("hist_tricks", &MoveInputs::hist_tricks)
-        .def_readwrite("hist_cards", &MoveInputs::hist_cards)
-        .def_readwrite("hist_turns", &MoveInputs::hist_turns)
-        .def_readwrite("hist_phases", &MoveInputs::hist_phases)
+        .def(py::init<int, int, int, int>())
+        .def_readwrite("hist_player_idx", &MoveInputs::hist_player_idx)
+        .def_readwrite("hist_trick", &MoveInputs::hist_trick)
+        .def_readwrite("hist_action", &MoveInputs::hist_action)
+        .def_readwrite("hist_turn", &MoveInputs::hist_turn)
+        .def_readwrite("hist_phase", &MoveInputs::hist_phase)
         .def_readwrite("hand", &MoveInputs::hand)
         .def_readwrite("player_idx", &MoveInputs::player_idx)
         .def_readwrite("trick", &MoveInputs::trick)
@@ -294,12 +307,12 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind RolloutResults struct
     py::class_<RolloutResults>(m, "RolloutResults")
-        .def(py::init<int, int, int, int, int>())
-        .def_readwrite("hist_player_idxs", &RolloutResults::hist_player_idxs)
-        .def_readwrite("hist_tricks", &RolloutResults::hist_tricks)
-        .def_readwrite("hist_cards", &RolloutResults::hist_cards)
-        .def_readwrite("hist_turns", &RolloutResults::hist_turns)
-        .def_readwrite("hist_phases", &RolloutResults::hist_phases)
+        .def(py::init<int, int, int, int, int, int>())
+        .def_readwrite("hist_player_idx", &RolloutResults::hist_player_idx)
+        .def_readwrite("hist_trick", &RolloutResults::hist_trick)
+        .def_readwrite("hist_action", &RolloutResults::hist_action)
+        .def_readwrite("hist_turn", &RolloutResults::hist_turn)
+        .def_readwrite("hist_phase", &RolloutResults::hist_phase)
         .def_readwrite("hand", &RolloutResults::hand)
         .def_readwrite("player_idx", &RolloutResults::player_idx)
         .def_readwrite("trick", &RolloutResults::trick)

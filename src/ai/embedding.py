@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..game.settings import Settings
-from ..game.tasks import get_task_defs
 from .hyperparams import Hyperparams
 from .utils import MLP
 
@@ -151,6 +150,24 @@ class CardModel(nn.Module):
         return x
 
 
+class TrickModel(nn.Module):
+    def __init__(
+        self, embed_dim: int, embed_dropout: float, embed_type: str, settings: Settings
+    ):
+        super().__init__()
+        num_embeddings = (
+            settings.num_tricks + settings.use_drafting * settings.num_draft_tricks
+        )
+        self.embed = PaddedEmbed(num_embeddings, embed_dim, embed_dropout, embed_type)
+        self.draft_delta = settings.num_tricks if settings.use_drafting else None
+
+    def forward(self, trick, phase):
+        if self.draft_delta:
+            trick = torch.where(phase == 2, trick + self.draft_delta, trick)
+
+        return self.embed(trick)
+
+
 class HandModel(nn.Module):
     def __init__(
         self,
@@ -246,12 +263,48 @@ class TasksModel(nn.Module):
         return x
 
 
+class ActionModel(nn.Module):
+    def __init__(
+        self, card_model: CardModel, task_model: PaddedEmbed, settings: Settings
+    ):
+        super().__init__()
+        self.card_model = card_model
+        self.task_model = task_model if settings.use_drafting else None
+        self.draft_length = (
+            settings.num_draft_tricks * settings.num_players
+            if settings.use_drafting
+            else 0
+        )
+        self.output_dim = card_model.output_dim
+        if self.task_model:
+            assert card_model.output_dim == task_model.output_dim
+
+    def forward(self, x, single_step):
+        if self.draft_length == 0:
+            return self.card_model(x)
+
+        assert self.task_model is not None
+
+        # x = (N, T, 2) or (N, T, A, 2) or (N, 2) or (N, A, 2)
+        if single_step:
+            is_draft = (x[0, 1] if len(x.shape) == 2 else x[0, 0, 1]).item() == -1
+            if is_draft:
+                return self.task_model(x[..., 0])
+            else:
+                return self.card_model(x)
+
+        task_embed = self.task_model(x[:, : self.draft_length, ..., 0])
+        card_embed = self.card_model(x[:, self.draft_length :])
+        return torch.cat([task_embed, card_embed], dim=1)
+
+
 def get_embed_models(
     hp: Hyperparams,
     settings: Settings,
 ) -> dict[str, nn.Module]:
+    # +1 b/c we need to encode the unassigned task.
     player_model = PaddedEmbed(
-        settings.num_players,
+        settings.num_players + (1 if settings.use_drafting else 0),
         hp.embed_dim,
         hp.embed_dropout,
         embed_type="embed",
@@ -272,8 +325,9 @@ def get_embed_models(
         dropout=hp.hand_dropout,
         agg_method=hp.hand_agg_method,
     )
+    # +1 b/c we need to encode the nodraft action.
     task_model = PaddedEmbed(
-        len(get_task_defs(settings.bank)),
+        settings.num_task_defs + (1 if settings.use_drafting else 0),
         hp.embed_dim,
         hp.embed_dropout,
         embed_type="embed",
@@ -288,13 +342,19 @@ def get_embed_models(
         hp.tasks_dropout,
         hp.tasks_agg_method,
     )
+    action_model: nn.Module = ActionModel(
+        card_model,
+        task_model,
+        settings,
+    )
+
     ret = {
         "player": player_model,
-        "trick": PaddedEmbed(
-            settings.num_tricks,
+        "trick": TrickModel(
             hp.embed_dim,
             hp.embed_dropout,
             embed_type=("pos" if hp.embed_use_pos else "embed"),
+            settings=settings,
         ),
         "turn": PaddedEmbed(
             settings.num_players,
@@ -303,9 +363,11 @@ def get_embed_models(
             embed_type=("pos" if hp.embed_use_pos else "embed"),
         ),
         "card": card_model,
+        "action": action_model,
+        "task": task_model,
         "tasks": tasks_model,
         "phase": PaddedEmbed(
-            settings.num_phases,
+            3 if settings.use_drafting else 2 if settings.use_signals else 1,
             hp.embed_dim,
             hp.embed_dropout,
             embed_type="embed",

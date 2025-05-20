@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <iostream>
 
 #include "engine.h"
 #include "settings.h"
@@ -13,8 +14,8 @@
 #include "utils.h"
 #include "rng.h"
 
-Engine::Engine(const Settings &settings, std::optional<int> seed)
-    : settings(settings)
+Engine::Engine(const Settings &settings_, std::optional<int> seed)
+    : settings(settings_)
 {
     settings.validate();
     reset_state(seed);
@@ -24,14 +25,13 @@ std::vector<std::vector<Card>> Engine::gen_hands(Rng &rng) const
 {
     // Create deck
     std::vector<Card> deck;
-    for (int suit : settings.get_suits())
+    for (int suit : settings.suits)
     {
         for (int rank = 1; rank <= settings.get_suit_length(suit); ++rank)
         {
             deck.emplace_back(rank, suit);
         }
     }
-
     // Shuffle deck
     deck = rng.shuffle(deck);
 
@@ -62,11 +62,8 @@ std::vector<std::vector<Card>> Engine::gen_hands(Rng &rng) const
     return hands;
 }
 
-std::vector<std::vector<AssignedTask>> Engine::gen_tasks(
-    int leader, Rng &rng) const
+std::vector<int> Engine::gen_tasks(Rng &rng) const
 {
-    auto task_defs = get_task_defs(settings.bank);
-
     std::vector<int> task_idxs;
     if (!settings.task_idxs.empty())
     {
@@ -91,7 +88,7 @@ std::vector<std::vector<AssignedTask>> Engine::gen_tasks(
             while ((int)task_idxs.size() < settings.max_num_tasks.value() &&
                    cur_difficulty < difficulty)
             {
-                int task_idx = rng.randint(0, task_defs.size() - 1);
+                int task_idx = rng.randint(0, settings.task_defs.size() - 1);
 
                 if (std::find(task_idxs.begin(), task_idxs.end(), task_idx) !=
                     task_idxs.end())
@@ -99,7 +96,7 @@ std::vector<std::vector<AssignedTask>> Engine::gen_tasks(
                     continue;
                 }
 
-                int task_diff = std::get<2>(task_defs[task_idx]);
+                int task_diff = std::get<2>(settings.task_defs[task_idx]);
                 if (cur_difficulty + task_diff <= difficulty)
                 {
                     task_idxs.push_back(task_idx);
@@ -114,6 +111,12 @@ std::vector<std::vector<AssignedTask>> Engine::gen_tasks(
         }
     }
 
+    return task_idxs;
+}
+
+std::vector<std::vector<AssignedTask>> Engine::assign_tasks(
+    int leader, Rng &rng, std::vector<int> &task_idxs) const
+{
     std::vector<std::vector<AssignedTask>> assigned_tasks(settings.num_players);
 
     if (settings.task_distro == "fixed" || settings.task_distro == "shuffle")
@@ -132,13 +135,8 @@ std::vector<std::vector<AssignedTask>> Engine::gen_tasks(
         for (size_t i = 0; i < task_idxs.size(); ++i)
         {
             int task_idx = task_idxs[i];
-            if (task_idx < 0)
-            {
-                continue;
-            }
-
             int player = (start_player + i) % settings.num_players;
-            const auto &[formula, desc, difficulty] = task_defs[task_idx];
+            const auto &[formula, desc, difficulty] = settings.task_defs[task_idx];
 
             assigned_tasks[player].emplace_back(
                 formula, desc, difficulty, task_idx, player, settings);
@@ -151,14 +149,9 @@ std::vector<std::vector<AssignedTask>> Engine::gen_tasks(
         for (size_t i = 0; i < task_idxs.size(); ++i)
         {
             int task_idx = task_idxs[i];
-            if (task_idx < 0)
-            {
-                continue;
-            }
-
             int player = rng.randint(0, settings.num_players - 1);
 
-            const auto &[formula, desc, difficulty] = task_defs[task_idx];
+            const auto &[formula, desc, difficulty] = settings.task_defs[task_idx];
 
             assigned_tasks[player].emplace_back(
                 formula, desc, difficulty, task_idx, player, settings);
@@ -194,7 +187,7 @@ void Engine::reset_state(std::optional<int> seed)
     }
     assert(leader >= 0);
 
-    Phase phase = settings.use_signals ? Phase::kSignal : Phase::kPlay;
+    Phase phase = settings.use_drafting ? Phase::kDraft : (settings.use_signals ? Phase::kSignal : Phase::kPlay);
 
     state.num_players = settings.num_players;
     state.phase = phase;
@@ -208,7 +201,17 @@ void Engine::reset_state(std::optional<int> seed)
     state.past_tricks = std::vector<std::pair<std::vector<Card>, int>>();
     state.signals = std::vector<std::optional<Signal>>(settings.num_players);
     state.trick_winner = std::nullopt;
-    state.assigned_tasks = gen_tasks(leader, rng);
+    std::vector<int> task_idxs = gen_tasks(rng);
+    if (settings.use_drafting)
+    {
+        state.assigned_tasks = std::vector<std::vector<AssignedTask>>(settings.num_players);
+        state.unassigned_task_idxs = task_idxs;
+    }
+    else
+    {
+        state.assigned_tasks = assign_tasks(leader, rng, task_idxs);
+        state.unassigned_task_idxs = std::vector<int>();
+    }
     state.status = Status::kUnresolved;
     state.value = 0.0;
 }
@@ -243,14 +246,57 @@ int Engine::calc_trick_winner(
     return max_it->second;
 }
 
+int Engine::num_drafts_left() const
+{
+    int tot = settings.num_draft_tricks * settings.num_players;
+    int num = settings.num_players * state.trick + state.get_turn();
+    return tot - num;
+}
+
 double Engine::move(const Action &action)
 {
-    if (state.phase == Phase::kSignal)
+    if (state.phase == Phase::kDraft)
+    {
+        assert(settings.use_drafting);
+        assert(action.player == state.cur_player);
+        assert(action.type == ActionType::kDraft || action.type == ActionType::kNoDraft);
+
+        if (action.type == ActionType::kDraft)
+        {
+            auto it = std::find(state.unassigned_task_idxs.begin(), state.unassigned_task_idxs.end(), action.task_idx.value());
+            assert(it != state.unassigned_task_idxs.end());
+            state.unassigned_task_idxs.erase(it);
+            const auto &[formula, desc, difficulty] = settings.task_defs[action.task_idx.value()];
+            state.assigned_tasks[state.cur_player].emplace_back(
+                formula, desc, difficulty, action.task_idx.value(), state.cur_player, settings);
+        }
+        else
+        {
+            assert(state.unassigned_task_idxs.size() < num_drafts_left());
+        }
+
+        state.actions.push_back(action);
+        state.cur_player = state.get_next_player();
+        if (state.cur_player == state.leader)
+        {
+            state.trick++;
+
+            if (state.trick == settings.num_draft_tricks)
+            {
+                assert(state.unassigned_task_idxs.size() == 0);
+                state.trick = 0;
+                state.phase = settings.use_signals ? Phase::kSignal : Phase::kPlay;
+            }
+        }
+
+        return 0.0;
+    }
+    else if (state.phase == Phase::kSignal)
     {
         assert(settings.use_signals);
         assert(action.player == state.cur_player);
         auto &player_hand = state.hands[state.cur_player];
-        assert(action.type == ActionType::kSignal || (settings.use_nosignal() && action.type == ActionType::kNoSignal));
+        assert(action.type == ActionType::kSignal || (settings.use_nosignal && action.type == ActionType::kNoSignal));
 
         if (action.type == ActionType::kSignal)
         {
@@ -384,7 +430,7 @@ double Engine::move(const Action &action)
             state.cur_player = state.get_next_player();
         }
 
-        if (state.trick == settings.num_tricks())
+        if (state.trick == settings.num_tricks)
         {
             state.phase = Phase::kEnd;
 
@@ -408,6 +454,7 @@ double Engine::move(const Action &action)
                                  std::to_string(static_cast<int>(state.phase)));
     }
 
+    assert(state.phase != Phase::kDraft);
     // Update game status
     bool all_success = true;
     bool any_fail = false;
@@ -483,15 +530,29 @@ double Engine::move(const Action &action)
 
 std::vector<Action> Engine::valid_actions() const
 {
-    if (state.phase == Phase::kSignal)
+    if (state.phase == Phase::kDraft)
+    {
+        assert(settings.use_drafting);
+        std::vector<Action> ret;
+        if (state.unassigned_task_idxs.size() < num_drafts_left())
+        {
+            ret.push_back({state.cur_player, ActionType::kNoDraft});
+        }
+
+        for (const auto &task_idx : state.unassigned_task_idxs)
+        {
+            ret.push_back({state.cur_player, ActionType::kDraft, std::nullopt, task_idx});
+        }
+        return ret;
+    }
+    else if (state.phase == Phase::kSignal)
     {
         assert(settings.use_signals);
-
         std::vector<Action> ret;
 
         if (!settings.single_signal && !settings.cheating_signal)
         {
-            ret.push_back({state.cur_player, ActionType::kNoSignal, std::nullopt});
+            ret.push_back({state.cur_player, ActionType::kNoSignal});
         }
 
         if (state.signals[state.cur_player].has_value() && !settings.cheating_signal)

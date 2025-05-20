@@ -2,14 +2,13 @@ import torch
 from tensordict import TensorDict
 
 from ..game.settings import Settings
-from ..lib.types import StrMap, TaskIdxs
+from ..lib.types import StrMap
 
 
 def featurize(
     public_history: StrMap | list[StrMap] | list[list[StrMap]],
     private_inputs: StrMap | list[StrMap] | list[list[StrMap]],
     valid_actions: tuple | list[tuple] | list[list[tuple]],
-    task_idxs: TaskIdxs | list[TaskIdxs] | list[list[TaskIdxs]],
     settings: Settings,
     *,
     non_feature_dims: int,
@@ -33,30 +32,33 @@ def featurize(
 
         return ret
 
-    hist_player_idxs = torch.tensor(
+    def pad_tasks(x):
+        return x + [(-1, -1)] * (settings.get_max_num_tasks() - len(x))
+
+    hist_player_idx = torch.tensor(
         mapper(lambda x: x.get("player_idx", -1), public_history),
         dtype=torch.int8,
     )
-    hist_tricks = torch.tensor(
+    hist_trick = torch.tensor(
         mapper(lambda x: x.get("trick", -1), public_history), dtype=torch.int8
     )
-    hist_cards = torch.tensor(
-        mapper(lambda x: x.get("card", (-1, -1)), public_history), dtype=torch.int8
+    hist_action = torch.tensor(
+        mapper(lambda x: x.get("action", (-1, -1)), public_history), dtype=torch.int8
     )
-    hist_turns = torch.tensor(
+    hist_turn = torch.tensor(
         mapper(lambda x: x.get("turn", -1), public_history), dtype=torch.int8
     )
-    hist_phases = torch.tensor(
+    hist_phase = torch.tensor(
         mapper(lambda x: x.get("phase", -1), public_history), dtype=torch.int8
     )
 
-    def pad_cards(x: list[tuple]):
+    def pad_hand(x: list[tuple]):
         # +1 to handle nosignal action in signal phase.
-        assert len(x) <= settings.max_hand_size + 1
-        return x + [(-1, -1)] * (settings.max_hand_size + 1 - len(x))
+        assert len(x) <= settings.max_hand_size
+        return x + [(-1, -1)] * (settings.max_hand_size - len(x))
 
     hand = torch.tensor(
-        mapper(lambda x: pad_cards(x["hand"]), private_inputs), dtype=torch.int8
+        mapper(lambda x: pad_hand(x["hand"]), private_inputs), dtype=torch.int8
     )
     player_idx = torch.tensor(
         mapper(lambda x: x["player_idx"], private_inputs), dtype=torch.int8
@@ -64,31 +66,26 @@ def featurize(
     trick = torch.tensor(mapper(lambda x: x["trick"], private_inputs), dtype=torch.int8)
     turn = torch.tensor(mapper(lambda x: x["turn"], private_inputs), dtype=torch.int8)
     phase = torch.tensor(mapper(lambda x: x["phase"], private_inputs), dtype=torch.int8)
-
-    valid_actions_arr: torch.Tensor = torch.tensor(
-        mapper(lambda x: pad_cards(x), valid_actions), dtype=torch.int8
+    task_idxs = torch.tensor(
+        mapper(lambda x: pad_tasks(x["task_idxs"]), private_inputs), dtype=torch.int8
     )
 
-    def pad_tasks(x):
-        return x + [(-1, -1)] * (settings.get_max_num_tasks() - len(x))
+    def pad_valid_actions(x: list[tuple]):
+        # +1 to handle nosignal action in signal phase.
+        assert len(x) <= settings.max_num_actions
+        return x + [(-1, -1)] * (settings.max_num_actions - len(x))
 
-    # task_idxs doesn't vary across time.
-    task_idxs_arr = torch.tensor(
-        mapper(
-            pad_tasks,
-            task_idxs,
-            _non_feature_dims=(1 if non_feature_dims == 2 else non_feature_dims),
-        ),
-        dtype=torch.int8,
+    valid_actions_arr: torch.Tensor = torch.tensor(
+        mapper(pad_valid_actions, valid_actions), dtype=torch.int8
     )
 
     return TensorDict(
         hist=TensorDict(
-            player_idxs=hist_player_idxs,
-            tricks=hist_tricks,
-            cards=hist_cards,
-            turns=hist_turns,
-            phases=hist_phases,
+            player_idx=hist_player_idx,
+            trick=hist_trick,
+            action=hist_action,
+            turn=hist_turn,
+            phase=hist_phase,
         ),
         private=TensorDict(
             hand=hand,
@@ -96,7 +93,7 @@ def featurize(
             trick=trick,
             turn=turn,
             phase=phase,
+            task_idxs=task_idxs,
         ),
         valid_actions=valid_actions_arr,
-        task_idxs=task_idxs_arr,
     )

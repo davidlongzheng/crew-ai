@@ -13,8 +13,9 @@ from ..featurizer import featurize
 from ..rollout import do_batch_rollout, do_batch_rollout_cpp
 
 
+@pytest.mark.parametrize("use_drafting", [False, True])
 @pytest.mark.parametrize("signal_mode", ["no", "yes", "single", "cheating"])
-def test_batch_rollout_cpp(signal_mode):
+def test_batch_rollout_cpp(signal_mode, use_drafting):
     kwargs = {}
     if signal_mode == "no":
         kwargs = {"use_signals": False, "single_signal": False}
@@ -24,6 +25,8 @@ def test_batch_rollout_cpp(signal_mode):
         kwargs = {"use_signals": True, "single_signal": True}
     elif signal_mode == "cheating":
         kwargs = {"use_signals": True, "single_signal": False, "cheating_signal": True}
+
+    kwargs["use_drafting"] = use_drafting
 
     settings = get_preset(DEFAULT_PRESET)
     settings = replace(settings, **kwargs)
@@ -38,7 +41,6 @@ def test_batch_rollout_cpp(signal_mode):
             public_history=[x["public_history"] for x in rollouts],
             private_inputs=[x["private_inputs"] for x in rollouts],
             valid_actions=[x["valid_actions"] for x in rollouts],
-            task_idxs=[x["task_idxs"] for x in rollouts],
             non_feature_dims=2,
             settings=settings,
         )
@@ -90,3 +92,12 @@ def test_batch_rollout_cpp(signal_mode):
                     assert torch.isclose(v, cpp_v).all()
                 else:
                     assert np.allclose(v, cpp_v)
+
+
+def test_rollout_draft():
+    settings = get_preset("med")
+    do_batch_rollout(
+        settings,
+        num_rollouts=1,
+        batch_seed=42,
+    )

@@ -65,9 +65,26 @@ void test_single_rollout()
     std::cout << "=== Testing Single Rollout ===" << std::endl;
 
     // Create settings
-    Settings settings;
-    settings.single_signal = true;
-    settings.task_idxs = {0, 0, 1, 2};
+    Settings settings(
+        4,            /* num_players */
+        4,            /* num_side_suits */
+        true,         /* use_trump_suit */
+        9,            /* side_suit_length */
+        4,            /* trump_suit_length */
+        true,         /* use_signals */
+        true,         /* single_signal */
+        false,        /* cheating_signal */
+        "easy",       /* bank */
+        "shuffle",    /* task_distro */
+        {0, 0, 1, 2}, /* task_idxs */
+        std::nullopt, /* min_difficulty */
+        std::nullopt, /* max_difficulty */
+        std::nullopt, /* max_num_tasks */
+        false,        /* use_drafting */
+        2,            /* num_draft_tricks */
+        5.0,          /* task_bonus */
+        1.0           /* win_bonus */
+    );
 
     // Create a rollout
     int engine_seed = 42;
@@ -101,9 +118,26 @@ void test_batch_rollout()
     std::cout << "\n=== Testing Batch Rollout ===" << std::endl;
 
     // Create settings
-    Settings settings;
-    settings.single_signal = true;
-    settings.task_idxs = {0, 0, 1, 2};
+    Settings settings(
+        4,            /* num_players */
+        4,            /* num_side_suits */
+        true,         /* use_trump_suit */
+        9,            /* side_suit_length */
+        4,            /* trump_suit_length */
+        true,         /* use_signals */
+        true,         /* single_signal */
+        false,        /* cheating_signal */
+        "easy",       /* bank */
+        "shuffle",    /* task_distro */
+        {0, 0, 1, 2}, /* task_idxs */
+        std::nullopt, /* min_difficulty */
+        std::nullopt, /* max_difficulty */
+        std::nullopt, /* max_num_tasks */
+        false,        /* use_drafting */
+        2,            /* num_draft_tricks */
+        5.0,          /* task_bonus */
+        1.0           /* win_bonus */
+    );
 
     // Create a batch rollout
     int num_rollouts = 1000;
@@ -140,7 +174,7 @@ void test_batch_rollout()
             r_actions(i) = 0; // Choose first valid action for simplicity
         }
 
-        int max_num_actions = batch_rollout.hand_pad_size;
+        int max_num_actions = batch_rollout.max_num_actions;
 
         // Create random probabilities and log probs
         py::array_t<float> probs(py::array::ShapeContainer({num_rollouts, (long)max_num_actions}));
@@ -185,11 +219,11 @@ void test_batch_rollout()
     // Get and print results
     RolloutResults results = batch_rollout.get_results();
     std::cout << "Results:" << std::endl;
-    print_tensor_info("  hist_player_idxs", results.hist_player_idxs);
-    print_tensor_info("  hist_tricks", results.hist_tricks);
-    print_tensor_info("  hist_cards", results.hist_cards);
-    print_tensor_info("  hist_turns", results.hist_turns);
-    print_tensor_info("  hist_phases", results.hist_phases);
+    print_tensor_info("  hist_player_idx", results.hist_player_idx);
+    print_tensor_info("  hist_trick", results.hist_trick);
+    print_tensor_info("  hist_action", results.hist_action);
+    print_tensor_info("  hist_turn", results.hist_turn);
+    print_tensor_info("  hist_phase", results.hist_phase);
     print_tensor_info("  rewards", results.rewards);
     print_tensor_info("  actions", results.actions);
     print_tensor_info("  win", results.win);

@@ -29,6 +29,8 @@ struct State
     std::vector<std::pair<std::vector<Card>, int>> past_tricks;
     std::vector<std::optional<Signal>> signals;
     std::optional<int> trick_winner;
+    std::vector<int> task_idxs;
+    std::vector<int> unassigned_task_idxs;
     std::vector<std::vector<AssignedTask>> assigned_tasks;
     Status status;
     double value;
@@ -54,6 +56,8 @@ struct State
             return 0;
         case Phase::kSignal:
             return 1;
+        case Phase::kDraft:
+            return 2;
         default:
             return -1;
         }

@@ -3,36 +3,36 @@
 #include <random>
 #include <algorithm>
 
-MoveInputs::MoveInputs(int num_rollouts, int hand_pad_size, int max_num_tasks)
-    : hist_player_idxs(num_rollouts),
-      hist_tricks(num_rollouts),
-      hist_cards({num_rollouts, 2}),
-      hist_turns(num_rollouts),
-      hist_phases(num_rollouts),
-      hand({num_rollouts, hand_pad_size, 2}),
+MoveInputs::MoveInputs(int num_rollouts, int max_hand_size, int max_num_actions, int max_num_tasks)
+    : hist_player_idx(num_rollouts),
+      hist_trick(num_rollouts),
+      hist_action({num_rollouts, 2}),
+      hist_turn(num_rollouts),
+      hist_phase(num_rollouts),
+      hand({num_rollouts, max_hand_size, 2}),
       player_idx(num_rollouts),
       trick(num_rollouts),
       turn(num_rollouts),
       phase(num_rollouts),
-      valid_actions({num_rollouts, hand_pad_size, 2}),
-      task_idxs({num_rollouts, max_num_tasks, 2})
+      task_idxs({num_rollouts, max_num_tasks, 2}),
+      valid_actions({num_rollouts, max_num_actions, 2})
 {
 }
 
-RolloutResults::RolloutResults(int num_rollouts, int seq_length, int hand_pad_size, int max_num_tasks, int num_cards)
-    : hist_player_idxs({num_rollouts, seq_length}),
-      hist_tricks({num_rollouts, seq_length}),
-      hist_cards({num_rollouts, seq_length, 2}),
-      hist_turns({num_rollouts, seq_length}),
-      hist_phases({num_rollouts, seq_length}),
-      hand({num_rollouts, seq_length, hand_pad_size, 2}),
+RolloutResults::RolloutResults(int num_rollouts, int seq_length, int max_hand_size, int max_num_actions, int max_num_tasks, int num_cards)
+    : hist_player_idx({num_rollouts, seq_length}),
+      hist_trick({num_rollouts, seq_length}),
+      hist_action({num_rollouts, seq_length, 2}),
+      hist_turn({num_rollouts, seq_length}),
+      hist_phase({num_rollouts, seq_length}),
+      hand({num_rollouts, seq_length, max_hand_size, 2}),
       player_idx({num_rollouts, seq_length}),
       trick({num_rollouts, seq_length}),
       turn({num_rollouts, seq_length}),
       phase({num_rollouts, seq_length}),
-      valid_actions({num_rollouts, seq_length, hand_pad_size, 2}),
-      task_idxs({num_rollouts, max_num_tasks, 2}),
-      log_probs({num_rollouts, seq_length, hand_pad_size}),
+      task_idxs({num_rollouts, seq_length, max_num_tasks, 2}),
+      valid_actions({num_rollouts, seq_length, max_num_actions, 2}),
+      log_probs({num_rollouts, seq_length, max_num_actions}),
       actions({num_rollouts, seq_length}),
       rewards({num_rollouts, seq_length}),
       frac_success(num_rollouts),
@@ -43,24 +43,27 @@ RolloutResults::RolloutResults(int num_rollouts, int seq_length, int hand_pad_si
 
 Rollout::Rollout(const Settings &settings)
     : settings(settings), engine(std::make_unique<Engine>(settings)),
-      seq_length(settings.get_seq_length()),
-      max_suit_length(settings.max_suit_length()), num_suits(settings.num_suits()),
-      hand_pad_size(settings.max_hand_size() + 1), max_num_tasks(settings.get_max_num_tasks())
+      seq_length(settings.seq_length),
+      max_suit_length(settings.max_suit_length),
+      num_suits(settings.num_suits),
+      max_hand_size(settings.max_hand_size),
+      max_num_actions(settings.max_num_actions),
+      max_num_tasks(settings.resolved_max_num_tasks)
 {
-    hist_player_idxs_pt.reserve(seq_length);
-    hist_tricks_pt.reserve(seq_length);
-    hist_cards_pt.reserve(seq_length * 2);
-    hist_turns_pt.reserve(seq_length);
-    hist_phases_pt.reserve(seq_length);
-    hand_pt.reserve(seq_length * hand_pad_size * 2);
+    hist_player_idx_pt.reserve(seq_length);
+    hist_trick_pt.reserve(seq_length);
+    hist_action_pt.reserve(seq_length * 2);
+    hist_turn_pt.reserve(seq_length);
+    hist_phase_pt.reserve(seq_length);
+    hand_pt.reserve(seq_length * max_hand_size * 2);
     player_idx_pt.reserve(seq_length);
     trick_pt.reserve(seq_length);
     turn_pt.reserve(seq_length);
     phase_pt.reserve(seq_length);
-    valid_actions_pt.reserve(seq_length * hand_pad_size * 2);
-    task_idxs.reserve(max_num_tasks * 2);
+    valid_actions_pt.reserve(seq_length * max_num_actions * 2);
+    task_idxs_pt.reserve(seq_length * max_num_tasks * 2);
     actions_pt.reserve(seq_length);
-    log_probs_pt.reserve(seq_length * hand_pad_size);
+    log_probs_pt.reserve(seq_length * max_num_actions);
     rewards_pt.reserve(seq_length);
 
     init_state();
@@ -68,14 +71,15 @@ Rollout::Rollout(const Settings &settings)
 
 void Rollout::init_state()
 {
-    hist_player_idxs_pt.push_back(-1);
-    hist_tricks_pt.push_back(-1);
-    hist_cards_pt.push_back(-1);
-    hist_cards_pt.push_back(-1);
-    hist_turns_pt.push_back(-1);
-    hist_phases_pt.push_back(-1);
+    hist_player_idx_pt.push_back(-1);
+    hist_trick_pt.push_back(-1);
+    for (int i = 0; i < 2; ++i)
+    {
+        hist_action_pt.push_back(-1);
+    }
+    hist_turn_pt.push_back(-1);
+    hist_phase_pt.push_back(-1);
 
-    encode_tasks();
     encode_aux_info();
 }
 
@@ -83,18 +87,18 @@ void Rollout::reset_state(int engine_seed)
 {
     engine->reset_state(engine_seed);
 
-    hist_player_idxs_pt.clear();
-    hist_tricks_pt.clear();
-    hist_cards_pt.clear();
-    hist_turns_pt.clear();
-    hist_phases_pt.clear();
+    hist_player_idx_pt.clear();
+    hist_trick_pt.clear();
+    hist_action_pt.clear();
+    hist_turn_pt.clear();
+    hist_phase_pt.clear();
     hand_pt.clear();
     player_idx_pt.clear();
     trick_pt.clear();
     turn_pt.clear();
     phase_pt.clear();
     valid_actions_pt.clear();
-    task_idxs.clear();
+    task_idxs_pt.clear();
     actions_pt.clear();
     log_probs_pt.clear();
     actions_pt.clear();
@@ -104,17 +108,25 @@ void Rollout::reset_state(int engine_seed)
     init_state();
 }
 
-void Rollout::encode_tasks()
+void Rollout::add_tasks(std::vector<int8_t> &vec)
 {
-    task_idxs.resize(max_num_tasks * 2, -1);
-    size_t i = 0;
+    int N = vec.size();
+    vec.resize(N + max_num_tasks * 2, -1);
+    size_t i = N;
+    for (int task_idx : engine->state.unassigned_task_idxs)
+    {
+        vec[i] = task_idx;
+        vec[i + 1] = settings.num_players;
+        i += 2;
+    }
+
     for (int player = 0; player < settings.num_players; ++player)
     {
         int player_idx = engine->state.get_player_idx(player);
         for (const auto &task : engine->state.assigned_tasks[player])
         {
-            task_idxs[i] = task.task_idx;
-            task_idxs[i + 1] = player_idx;
+            vec[i] = task.task_idx;
+            vec[i + 1] = player_idx;
             i += 2;
         }
     }
@@ -122,7 +134,7 @@ void Rollout::encode_tasks()
 
 void Rollout::encode_aux_info()
 {
-    aux_info.resize(settings.num_cards());
+    aux_info.resize(settings.num_cards);
     for (int player = 0; player < settings.num_players; ++player)
     {
         int player_idx = engine->state.get_player_idx(player);
@@ -134,17 +146,34 @@ void Rollout::encode_aux_info()
     }
 }
 
-void Rollout::add_card(std::vector<int8_t> &vec, const std::optional<Card> &card)
+void Rollout::add_card(std::vector<int8_t> &vec, const Card &card)
 {
-    if (!card.has_value())
+    vec.push_back(static_cast<int8_t>(card.rank - 1));
+    vec.push_back(static_cast<int8_t>(settings.get_suit_idx(card.suit)));
+}
+
+void Rollout::add_action(std::vector<int8_t> &vec, const Action &action)
+{
+    switch (action.type)
     {
-        vec.push_back(static_cast<int8_t>(max_suit_length));
-        vec.push_back(static_cast<int8_t>(num_suits));
-    }
-    else
-    {
-        vec.push_back(static_cast<int8_t>(card->rank - 1));
-        vec.push_back(static_cast<int8_t>(settings.get_suit_idx(card->suit)));
+    case ActionType::kSignal:
+    case ActionType::kPlay:
+        add_card(vec, action.card.value());
+        break;
+    case ActionType::kNoSignal:
+        vec.push_back(max_suit_length);
+        vec.push_back(num_suits);
+        break;
+    case ActionType::kDraft:
+        vec.push_back(action.task_idx.value());
+        vec.push_back(-1);
+        break;
+    case ActionType::kNoDraft:
+        vec.push_back(settings.num_task_defs);
+        vec.push_back(-1);
+        break;
+    default:
+        assert(false);
     }
 }
 
@@ -155,7 +184,7 @@ void Rollout::add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand)
         add_card(vec, card);
     }
 
-    for (int i = 0; i < hand_pad_size - hand.size(); ++i)
+    for (int i = 0; i < max_hand_size - hand.size(); ++i)
     {
         vec.push_back(-1);
         vec.push_back(-1);
@@ -166,10 +195,10 @@ void Rollout::add_valid_actions(std::vector<int8_t> &vec, const std::vector<Acti
 {
     for (const auto &action : valid_actions)
     {
-        add_card(vec, action.card);
+        add_action(vec, action);
     }
 
-    for (int i = 0; i < hand_pad_size - valid_actions.size(); ++i)
+    for (int i = 0; i < max_num_actions - valid_actions.size(); ++i)
     {
         vec.push_back(-1);
         vec.push_back(-1);
@@ -193,6 +222,7 @@ void Rollout::record_move_inputs()
     trick_pt.push_back(engine->state.trick);
     turn_pt.push_back(turn);
     phase_pt.push_back(engine->state.phase_idx());
+    add_tasks(task_idxs_pt);
 
     // Record valid actions
     valid_actions = engine->valid_actions();
@@ -213,11 +243,11 @@ void Rollout::move(int action_idx)
     actions_pt.push_back(action_idx);
 
     // Record public history
-    hist_player_idxs_pt.push_back(engine->state.get_player_idx());
-    hist_tricks_pt.push_back(engine->state.trick);
-    add_card(hist_cards_pt, action.card);
-    hist_turns_pt.push_back(engine->state.get_turn());
-    hist_phases_pt.push_back(engine->state.phase_idx());
+    hist_player_idx_pt.push_back(engine->state.get_player_idx());
+    hist_trick_pt.push_back(engine->state.trick);
+    add_action(hist_action_pt, action);
+    hist_turn_pt.push_back(engine->state.get_turn());
+    hist_phase_pt.push_back(engine->state.phase_idx());
 
     // Execute the action and record reward
     float reward = engine->move(action);
@@ -226,15 +256,15 @@ void Rollout::move(int action_idx)
 
 void Rollout::pop_last_history()
 {
-    hist_player_idxs_pt.pop_back();
-    hist_tricks_pt.pop_back();
-    hist_cards_pt.resize(hist_cards_pt.size() - 2);
-    hist_turns_pt.pop_back();
-    hist_phases_pt.pop_back();
+    hist_player_idx_pt.pop_back();
+    hist_trick_pt.pop_back();
+    hist_action_pt.resize(hist_action_pt.size() - 2);
+    hist_turn_pt.pop_back();
+    hist_phase_pt.pop_back();
 }
 
 BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, bool multithread)
-    : settings(settings_), num_rollouts(num_rollouts_), seq_length(settings.get_seq_length()), hand_pad_size(settings.max_hand_size() + 1), max_num_tasks(settings.get_max_num_tasks()), move_inputs(num_rollouts, hand_pad_size, max_num_tasks), results(num_rollouts, seq_length, hand_pad_size, max_num_tasks, settings.num_cards())
+    : settings(settings_), num_rollouts(num_rollouts_), seq_length(settings.seq_length), max_hand_size(settings.max_hand_size), max_num_actions(settings.max_num_actions), max_num_tasks(settings.resolved_max_num_tasks), move_inputs(num_rollouts, max_hand_size, max_num_actions, max_num_tasks), results(num_rollouts, seq_length, max_hand_size, max_num_actions, max_num_tasks, settings.num_cards)
 {
     if (multithread)
     {
@@ -258,20 +288,20 @@ void BatchRollout::reset_state(const std::vector<int> &engine_seeds)
 
 const MoveInputs &BatchRollout::get_move_inputs()
 {
-    auto *hist_player_idxs_ptr = static_cast<int8_t *>(move_inputs.hist_player_idxs.mutable_data());
-    auto *hist_tricks_ptr = static_cast<int8_t *>(move_inputs.hist_tricks.mutable_data());
-    auto *hist_cards_ptr = static_cast<int8_t *>(move_inputs.hist_cards.mutable_data());
-    auto *hist_turns_ptr = static_cast<int8_t *>(move_inputs.hist_turns.mutable_data());
-    auto *hist_phases_ptr = static_cast<int8_t *>(move_inputs.hist_phases.mutable_data());
+    auto *hist_player_idx_ptr = static_cast<int8_t *>(move_inputs.hist_player_idx.mutable_data());
+    auto *hist_trick_ptr = static_cast<int8_t *>(move_inputs.hist_trick.mutable_data());
+    auto *hist_action_ptr = static_cast<int8_t *>(move_inputs.hist_action.mutable_data());
+    auto *hist_turn_ptr = static_cast<int8_t *>(move_inputs.hist_turn.mutable_data());
+    auto *hist_phase_ptr = static_cast<int8_t *>(move_inputs.hist_phase.mutable_data());
 
     auto *hand_ptr = static_cast<int8_t *>(move_inputs.hand.mutable_data());
     auto *player_idx_ptr = static_cast<int8_t *>(move_inputs.player_idx.mutable_data());
     auto *trick_ptr = static_cast<int8_t *>(move_inputs.trick.mutable_data());
     auto *turn_ptr = static_cast<int8_t *>(move_inputs.turn.mutable_data());
     auto *phase_ptr = static_cast<int8_t *>(move_inputs.phase.mutable_data());
+    auto *task_idxs_ptr = static_cast<int8_t *>(move_inputs.task_idxs.mutable_data());
 
     auto *valid_actions_ptr = static_cast<int8_t *>(move_inputs.valid_actions.mutable_data());
-    auto *task_idxs_ptr = static_cast<int8_t *>(move_inputs.task_idxs.mutable_data());
 
     if (pool)
     {
@@ -298,19 +328,19 @@ const MoveInputs &BatchRollout::get_move_inputs()
             rollout.record_move_inputs();
         }
 
-        *hist_player_idxs_ptr = rollout.hist_player_idxs_pt.back();
-        hist_player_idxs_ptr++;
-        *hist_tricks_ptr = rollout.hist_tricks_pt.back();
-        hist_tricks_ptr++;
-        std::copy(rollout.hist_cards_pt.end() - 2, rollout.hist_cards_pt.end(), hist_cards_ptr);
-        hist_cards_ptr += 2;
-        *hist_turns_ptr = rollout.hist_turns_pt.back();
-        hist_turns_ptr++;
-        *hist_phases_ptr = rollout.hist_phases_pt.back();
-        hist_phases_ptr++;
+        *hist_player_idx_ptr = rollout.hist_player_idx_pt.back();
+        hist_player_idx_ptr++;
+        *hist_trick_ptr = rollout.hist_trick_pt.back();
+        hist_trick_ptr++;
+        std::copy(rollout.hist_action_pt.end() - 2, rollout.hist_action_pt.end(), hist_action_ptr);
+        hist_action_ptr += 2;
+        *hist_turn_ptr = rollout.hist_turn_pt.back();
+        hist_turn_ptr++;
+        *hist_phase_ptr = rollout.hist_phase_pt.back();
+        hist_phase_ptr++;
 
-        std::copy(rollout.hand_pt.end() - hand_pad_size * 2, rollout.hand_pt.end(), hand_ptr);
-        hand_ptr += hand_pad_size * 2;
+        std::copy(rollout.hand_pt.end() - max_hand_size * 2, rollout.hand_pt.end(), hand_ptr);
+        hand_ptr += max_hand_size * 2;
         *player_idx_ptr = rollout.player_idx_pt.back();
         player_idx_ptr++;
         *trick_ptr = rollout.trick_pt.back();
@@ -320,11 +350,11 @@ const MoveInputs &BatchRollout::get_move_inputs()
         *phase_ptr = rollout.phase_pt.back();
         phase_ptr++;
 
-        std::copy(rollout.valid_actions_pt.end() - hand_pad_size * 2, rollout.valid_actions_pt.end(), valid_actions_ptr);
-        valid_actions_ptr += hand_pad_size * 2;
+        std::copy(rollout.valid_actions_pt.end() - max_num_actions * 2, rollout.valid_actions_pt.end(), valid_actions_ptr);
+        valid_actions_ptr += max_num_actions * 2;
 
-        std::copy(rollout.task_idxs.begin(), rollout.task_idxs.end(), task_idxs_ptr);
-        task_idxs_ptr += rollout.max_num_tasks * 2;
+        std::copy(rollout.task_idxs_pt.end() - max_num_tasks * 2, rollout.task_idxs_pt.end(), task_idxs_ptr);
+        task_idxs_ptr += max_num_tasks * 2;
     }
 
     return move_inputs;
@@ -384,20 +414,20 @@ const RolloutResults &BatchRollout::get_results()
         rollout.pop_last_history();
     }
 
-    auto *hist_player_idxs_ptr = static_cast<int8_t *>(results.hist_player_idxs.mutable_data());
-    auto *hist_tricks_ptr = static_cast<int8_t *>(results.hist_tricks.mutable_data());
-    auto *hist_cards_ptr = static_cast<int8_t *>(results.hist_cards.mutable_data());
-    auto *hist_turns_ptr = static_cast<int8_t *>(results.hist_turns.mutable_data());
-    auto *hist_phases_ptr = static_cast<int8_t *>(results.hist_phases.mutable_data());
+    auto *hist_player_idx_ptr = static_cast<int8_t *>(results.hist_player_idx.mutable_data());
+    auto *hist_trick_ptr = static_cast<int8_t *>(results.hist_trick.mutable_data());
+    auto *hist_action_ptr = static_cast<int8_t *>(results.hist_action.mutable_data());
+    auto *hist_turn_ptr = static_cast<int8_t *>(results.hist_turn.mutable_data());
+    auto *hist_phase_ptr = static_cast<int8_t *>(results.hist_phase.mutable_data());
 
     auto *hand_ptr = static_cast<int8_t *>(results.hand.mutable_data());
     auto *player_idx_ptr = static_cast<int8_t *>(results.player_idx.mutable_data());
     auto *trick_ptr = static_cast<int8_t *>(results.trick.mutable_data());
     auto *turn_ptr = static_cast<int8_t *>(results.turn.mutable_data());
     auto *phase_ptr = static_cast<int8_t *>(results.phase.mutable_data());
+    auto *task_idxs_ptr = static_cast<int8_t *>(results.task_idxs.mutable_data());
 
     auto *valid_actions_ptr = static_cast<int8_t *>(results.valid_actions.mutable_data());
-    auto *task_idxs_ptr = static_cast<int8_t *>(results.task_idxs.mutable_data());
 
     auto *log_probs_ptr = static_cast<float *>(results.log_probs.mutable_data());
     auto *actions_ptr = static_cast<long *>(results.actions.mutable_data());
@@ -409,38 +439,39 @@ const RolloutResults &BatchRollout::get_results()
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
         const auto &rollout = rollouts[rollout_idx];
-        assert(rollout.hist_player_idxs_pt.size() == seq_length);
-        assert(rollout.hist_tricks_pt.size() == seq_length);
-        assert(rollout.hist_cards_pt.size() == seq_length * 2);
-        assert(rollout.hist_turns_pt.size() == seq_length);
-        assert(rollout.hist_phases_pt.size() == seq_length);
-        assert(rollout.hand_pt.size() == seq_length * hand_pad_size * 2);
+        assert(rollout.hist_player_idx_pt.size() == seq_length);
+        assert(rollout.hist_trick_pt.size() == seq_length);
+        assert(rollout.hist_action_pt.size() == seq_length * 2);
+        assert(rollout.hist_turn_pt.size() == seq_length);
+        assert(rollout.hist_phase_pt.size() == seq_length);
+        assert(rollout.hand_pt.size() == seq_length * max_hand_size * 2);
         assert(rollout.player_idx_pt.size() == seq_length);
         assert(rollout.trick_pt.size() == seq_length);
         assert(rollout.turn_pt.size() == seq_length);
         assert(rollout.phase_pt.size() == seq_length);
-        assert(rollout.valid_actions_pt.size() == seq_length * hand_pad_size * 2);
-        assert(rollout.log_probs_pt.size() == seq_length * hand_pad_size);
+        assert(rollout.task_idxs_pt.size() == seq_length * max_num_tasks * 2);
+        assert(rollout.valid_actions_pt.size() == seq_length * max_num_actions * 2);
+        assert(rollout.log_probs_pt.size() == seq_length * max_num_actions);
         assert(rollout.actions_pt.size() == seq_length);
         assert(rollout.rewards_pt.size() == seq_length);
 
-        std::copy(rollout.hist_player_idxs_pt.begin(), rollout.hist_player_idxs_pt.end(), hist_player_idxs_ptr);
-        hist_player_idxs_ptr += rollout.hist_player_idxs_pt.size();
+        std::copy(rollout.hist_player_idx_pt.begin(), rollout.hist_player_idx_pt.end(), hist_player_idx_ptr);
+        hist_player_idx_ptr += rollout.hist_player_idx_pt.size();
 
-        std::copy(rollout.hist_tricks_pt.begin(), rollout.hist_tricks_pt.end(), hist_tricks_ptr);
-        hist_tricks_ptr += rollout.hist_tricks_pt.size();
+        std::copy(rollout.hist_trick_pt.begin(), rollout.hist_trick_pt.end(), hist_trick_ptr);
+        hist_trick_ptr += rollout.hist_trick_pt.size();
 
-        std::copy(rollout.hist_cards_pt.begin(), rollout.hist_cards_pt.end(), hist_cards_ptr);
-        hist_cards_ptr += seq_length * 2;
+        std::copy(rollout.hist_action_pt.begin(), rollout.hist_action_pt.end(), hist_action_ptr);
+        hist_action_ptr += rollout.hist_action_pt.size();
 
-        std::copy(rollout.hist_turns_pt.begin(), rollout.hist_turns_pt.end(), hist_turns_ptr);
-        hist_turns_ptr += rollout.hist_turns_pt.size();
+        std::copy(rollout.hist_turn_pt.begin(), rollout.hist_turn_pt.end(), hist_turn_ptr);
+        hist_turn_ptr += rollout.hist_turn_pt.size();
 
-        std::copy(rollout.hist_phases_pt.begin(), rollout.hist_phases_pt.end(), hist_phases_ptr);
-        hist_phases_ptr += rollout.hist_phases_pt.size();
+        std::copy(rollout.hist_phase_pt.begin(), rollout.hist_phase_pt.end(), hist_phase_ptr);
+        hist_phase_ptr += rollout.hist_phase_pt.size();
 
         std::copy(rollout.hand_pt.begin(), rollout.hand_pt.end(), hand_ptr);
-        hand_ptr += seq_length * hand_pad_size * 2;
+        hand_ptr += rollout.hand_pt.size();
 
         std::copy(rollout.player_idx_pt.begin(), rollout.player_idx_pt.end(), player_idx_ptr);
         player_idx_ptr += rollout.player_idx_pt.size();
@@ -454,14 +485,14 @@ const RolloutResults &BatchRollout::get_results()
         std::copy(rollout.phase_pt.begin(), rollout.phase_pt.end(), phase_ptr);
         phase_ptr += rollout.phase_pt.size();
 
-        std::copy(rollout.valid_actions_pt.begin(), rollout.valid_actions_pt.end(), valid_actions_ptr);
-        valid_actions_ptr += seq_length * hand_pad_size * 2;
+        std::copy(rollout.task_idxs_pt.begin(), rollout.task_idxs_pt.end(), task_idxs_ptr);
+        task_idxs_ptr += rollout.task_idxs_pt.size();
 
-        std::copy(rollout.task_idxs.begin(), rollout.task_idxs.end(), task_idxs_ptr);
-        task_idxs_ptr += rollout.max_num_tasks * 2;
+        std::copy(rollout.valid_actions_pt.begin(), rollout.valid_actions_pt.end(), valid_actions_ptr);
+        valid_actions_ptr += rollout.valid_actions_pt.size();
 
         std::copy(rollout.log_probs_pt.begin(), rollout.log_probs_pt.end(), log_probs_ptr);
-        log_probs_ptr += seq_length * hand_pad_size;
+        log_probs_ptr += rollout.log_probs_pt.size();
 
         std::copy(rollout.actions_pt.begin(), rollout.actions_pt.end(), actions_ptr);
         actions_ptr += rollout.actions_pt.size();

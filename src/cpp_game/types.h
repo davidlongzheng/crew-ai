@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <cassert>
+#include <stdexcept>
 
 // Constants
 constexpr int TRUMP_SUIT_NUM = 4;
@@ -52,7 +53,9 @@ enum class ActionType
 {
     kPlay,
     kSignal,
-    kNoSignal
+    kNoSignal,
+    kDraft,
+    kNoDraft
 };
 
 // Convert string to ActionType
@@ -64,6 +67,10 @@ inline ActionType string_to_action_type(std::string_view type)
         return ActionType::kSignal;
     if (type == "nosignal")
         return ActionType::kNoSignal;
+    if (type == "draft")
+        return ActionType::kDraft;
+    if (type == "nodraft")
+        return ActionType::kNoDraft;
     throw std::runtime_error("Invalid action type: " + std::string(type));
 }
 
@@ -78,6 +85,10 @@ inline std::string action_type_to_string(ActionType type)
         return "signal";
     case ActionType::kNoSignal:
         return "nosignal";
+    case ActionType::kDraft:
+        return "draft";
+    case ActionType::kNoDraft:
+        return "nodraft";
     default:
         throw std::runtime_error("Invalid action type");
     }
@@ -88,6 +99,7 @@ enum class Phase
 {
     kPlay,
     kSignal,
+    kDraft,
     kEnd
 };
 
@@ -100,6 +112,8 @@ inline std::string phase_to_string(Phase type)
         return "play";
     case Phase::kSignal:
         return "signal";
+    case Phase::kDraft:
+        return "draft";
     case Phase::kEnd:
         return "end";
     default:
@@ -110,25 +124,37 @@ inline std::string phase_to_string(Phase type)
 // Action class representing a player action
 struct Action
 {
+    Action(int player_, ActionType type_, std::optional<Card> card_ = std::nullopt, std::optional<int> task_idx_ = std::nullopt)
+        : player(player_), type(type_), card(card_), task_idx(task_idx_) {}
+
     int player;
     ActionType type;
     std::optional<Card> card;
-
+    std::optional<int> task_idx;
     std::string to_string() const
     {
-        if (type == ActionType::kNoSignal)
+        if (type == ActionType::kDraft)
+        {
+            return "P" + std::to_string(player) + " drafts " +
+                   std::to_string(task_idx.value()) + ".";
+        }
+        else if (type == ActionType::kNoDraft)
+        {
+            return "P" + std::to_string(player) + " does not draft.";
+        }
+        else if (type == ActionType::kNoSignal)
         {
             return "P" + std::to_string(player) + " does not signal.";
         }
         return "P" + std::to_string(player) + " " +
                action_type_to_string(type) + "s " +
-               (card ? card->to_string() : "None") + ".";
+               card->to_string() + ".";
     }
 
     // Equality operators
     bool operator==(const Action &other) const
     {
-        return player == other.player && type == other.type && card == other.card;
+        return player == other.player && type == other.type && card == other.card && task_idx == other.task_idx;
     }
 
     bool operator!=(const Action &other) const

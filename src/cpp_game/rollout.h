@@ -14,14 +14,14 @@ namespace py = pybind11;
 
 struct MoveInputs
 {
-    MoveInputs(int num_rollouts, int hand_pad_size, int max_num_tasks);
+    MoveInputs(int num_rollouts, int max_hand_size, int max_num_actions, int max_num_tasks);
 
     // History tensors
-    py::array_t<int8_t> hist_player_idxs;
-    py::array_t<int8_t> hist_tricks;
-    py::array_t<int8_t> hist_cards;
-    py::array_t<int8_t> hist_turns;
-    py::array_t<int8_t> hist_phases;
+    py::array_t<int8_t> hist_player_idx;
+    py::array_t<int8_t> hist_trick;
+    py::array_t<int8_t> hist_action;
+    py::array_t<int8_t> hist_turn;
+    py::array_t<int8_t> hist_phase;
 
     // Private input tensors
     py::array_t<int8_t> hand;
@@ -29,22 +29,22 @@ struct MoveInputs
     py::array_t<int8_t> trick;
     py::array_t<int8_t> turn;
     py::array_t<int8_t> phase;
-
-    // Action and task tensors
-    py::array_t<int8_t> valid_actions;
     py::array_t<int8_t> task_idxs;
+
+    // Action tensors
+    py::array_t<int8_t> valid_actions;
 };
 
 struct RolloutResults
 {
-    RolloutResults(int num_rollouts, int seq_length, int hand_pad_size, int max_num_tasks, int num_cards);
+    RolloutResults(int num_rollouts, int seq_length, int max_hand_size, int max_num_actions, int max_num_tasks, int num_cards);
 
     // History tensors
-    py::array_t<int8_t> hist_player_idxs;
-    py::array_t<int8_t> hist_tricks;
-    py::array_t<int8_t> hist_cards;
-    py::array_t<int8_t> hist_turns;
-    py::array_t<int8_t> hist_phases;
+    py::array_t<int8_t> hist_player_idx;
+    py::array_t<int8_t> hist_trick;
+    py::array_t<int8_t> hist_action;
+    py::array_t<int8_t> hist_turn;
+    py::array_t<int8_t> hist_phase;
 
     // Private input tensors
     py::array_t<int8_t> hand;
@@ -52,10 +52,10 @@ struct RolloutResults
     py::array_t<int8_t> trick;
     py::array_t<int8_t> turn;
     py::array_t<int8_t> phase;
-
-    // Action and task tensors
-    py::array_t<int8_t> valid_actions;
     py::array_t<int8_t> task_idxs;
+
+    // Action tensors
+    py::array_t<int8_t> valid_actions;
 
     // Probability and reward tensors
     py::array_t<float> log_probs;
@@ -83,16 +83,17 @@ struct Rollout
     size_t seq_length;
     size_t max_suit_length;
     size_t num_suits;
-    size_t hand_pad_size;
+    size_t max_hand_size;
+    size_t max_num_actions;
     size_t max_num_tasks;
     std::vector<Action> valid_actions;
 
     // history tensors
-    std::vector<int8_t> hist_player_idxs_pt;
-    std::vector<int8_t> hist_tricks_pt;
-    std::vector<int8_t> hist_cards_pt;
-    std::vector<int8_t> hist_turns_pt;
-    std::vector<int8_t> hist_phases_pt;
+    std::vector<int8_t> hist_player_idx_pt;
+    std::vector<int8_t> hist_trick_pt;
+    std::vector<int8_t> hist_action_pt;
+    std::vector<int8_t> hist_turn_pt;
+    std::vector<int8_t> hist_phase_pt;
 
     // private input tensors
     std::vector<int8_t> hand_pt;
@@ -100,10 +101,10 @@ struct Rollout
     std::vector<int8_t> trick_pt;
     std::vector<int8_t> turn_pt;
     std::vector<int8_t> phase_pt;
+    std::vector<int8_t> task_idxs_pt;
 
     // action and task tensors
     std::vector<int8_t> valid_actions_pt;
-    std::vector<int8_t> task_idxs;
 
     // probability and reward tensors
     std::vector<float> log_probs_pt;
@@ -114,9 +115,10 @@ struct Rollout
     std::vector<int8_t> aux_info;
 
     // Helper functions
-    void encode_tasks();
+    void add_tasks(std::vector<int8_t> &vec);
     void encode_aux_info();
-    void add_card(std::vector<int8_t> &vec, const std::optional<Card> &card);
+    void add_card(std::vector<int8_t> &vec, const Card &card);
+    void add_action(std::vector<int8_t> &vec, const Action &action);
     void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand);
     void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions);
     void add_log_probs(const py::array_t<float> &log_probs);
@@ -135,7 +137,8 @@ struct BatchRollout
     const Settings &settings;
     int num_rollouts;
     int seq_length;
-    int hand_pad_size;
+    int max_hand_size;
+    int max_num_actions;
     int max_num_tasks;
 
     std::vector<Rollout> rollouts;

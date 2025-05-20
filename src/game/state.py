@@ -21,6 +21,8 @@ class State:
     past_tricks: list[tuple[list[Card], int]]
     signals: list[Signal | None]
     trick_winner: int | None
+    task_idxs: list[int]
+    unassigned_task_idxs: list[int]
     assigned_tasks: list[list[AssignedTask]]
     status: Literal["success", "fail", "unresolved"]
     value: float
@@ -38,6 +40,7 @@ class State:
         return {
             "play": 0,
             "signal": 1,
+            "draft": 2,
         }[self.phase]
 
     def get_player(self, player_idx):

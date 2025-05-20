@@ -31,10 +31,13 @@ class Settings:
     # from a random player.
     # In random, each task is given to a random player.
     task_distro: Literal["fixed", "shuffle", "random"] = "shuffle"
-    task_idxs: tuple[int | None, ...] = field(default_factory=tuple)
+    task_idxs: tuple[int, ...] = field(default_factory=tuple)
     min_difficulty: int | None = None
     max_difficulty: int | None = None
     max_num_tasks: int | None = None
+
+    use_drafting: bool = False
+    num_draft_tricks: int = 3
 
     # Task bonus is how much of a bonus you get for a fully completed task
     # vs a partially completed task.
@@ -57,6 +60,9 @@ class Settings:
             == (self.max_difficulty is None)
             == (self.max_num_tasks is None)
         )
+        if self.use_drafting:
+            assert self.num_draft_tricks > 0
+            assert self.num_draft_tricks * self.num_players >= self.get_max_num_tasks()
 
         if self.min_difficulty is not None:
             assert self.min_difficulty < self.max_difficulty
@@ -75,6 +81,25 @@ class Settings:
     @cached_property
     def max_hand_size(self):
         return (self.num_cards - 1) // self.num_players + 1
+
+    @cached_property
+    def task_defs(self):
+        from .tasks import get_task_defs
+
+        return get_task_defs(self.bank)
+
+    @cached_property
+    def num_task_defs(self):
+        ret = len(self.task_defs)
+        assert ret < 127
+        return ret
+
+    @cached_property
+    def max_num_actions(self):
+        ret = self.max_hand_size + self.use_signals
+        if self.use_drafting:
+            ret = max(ret, self.get_max_num_tasks() + 1)
+        return ret
 
     def get_suit_idx(self, suit):
         if suit < self.num_side_suits:
@@ -122,11 +147,11 @@ class Settings:
 
     @cached_property
     def num_phases(self):
-        return 1 + self.use_signals
+        return 1 + self.use_signals + self.use_drafting
 
     def get_max_num_tasks(self) -> int:
         if self.task_idxs:
-            return sum(x is not None for x in self.task_idxs)
+            return len(self.task_idxs)
         else:
             return cast(int, self.max_num_tasks)
 
@@ -134,29 +159,32 @@ class Settings:
         return self.num_players * (
             self.num_tricks * (2 if self.use_signals and not self.single_signal else 1)
             + self.single_signal
+            + self.use_drafting * self.num_draft_tricks
         )
 
     def to_cpp(self):
         import cpp_game
 
-        cpp_settings = cpp_game.Settings()
-        cpp_settings.num_players = self.num_players
-        cpp_settings.num_side_suits = self.num_side_suits
-        cpp_settings.use_trump_suit = self.use_trump_suit
-        cpp_settings.side_suit_length = self.side_suit_length
-        cpp_settings.trump_suit_length = self.trump_suit_length
-        cpp_settings.use_signals = self.use_signals
-        cpp_settings.cheating_signal = self.cheating_signal
-        cpp_settings.single_signal = self.single_signal
-        cpp_settings.bank = self.bank
-        cpp_settings.task_distro = self.task_distro
-        cpp_settings.task_idxs = self.task_idxs
-        cpp_settings.min_difficulty = self.min_difficulty
-        cpp_settings.max_difficulty = self.max_difficulty
-        cpp_settings.max_num_tasks = self.max_num_tasks
-        cpp_settings.task_bonus = self.task_bonus
-        cpp_settings.win_bonus = self.win_bonus
-
+        cpp_settings = cpp_game.Settings(
+            self.num_players,
+            self.num_side_suits,
+            self.use_trump_suit,
+            self.side_suit_length,
+            self.trump_suit_length,
+            self.use_signals,
+            self.cheating_signal,
+            self.single_signal,
+            self.bank,
+            self.task_distro,
+            self.task_idxs,
+            self.min_difficulty,
+            self.max_difficulty,
+            self.max_num_tasks,
+            self.use_drafting,
+            self.num_draft_tricks,
+            self.task_bonus,
+            self.win_bonus,
+        )
         return cpp_settings
 
 
@@ -167,24 +195,21 @@ def get_preset(preset):
             side_suit_length=4,
             trump_suit_length=2,
             single_signal=True,
-            task_idxs=(0, 0, 1),
+            task_idxs=(0, 1, 2),
         )
     elif preset == "easy_p4":
         return Settings(
             single_signal=True,
             task_idxs=(0, 0, 1, 2),
         )
-    elif preset == "easy_p4_cheating":
-        return Settings(
-            cheating_signal=True,
-            task_idxs=(0, 0, 1, 2),
-        )
     elif preset == "med":
         return Settings(
             bank="med",
-            min_difficulty=1,
-            max_difficulty=3,
+            min_difficulty=4,
+            max_difficulty=7,
             max_num_tasks=4,
+            use_signals=False,
+            use_drafting=True,
         )
     else:
         raise ValueError(preset)

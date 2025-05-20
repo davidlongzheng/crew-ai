@@ -205,3 +205,24 @@ def test_full_hand(use_signals: bool) -> None:
 
     assert engine.state.hands == [[] for _ in range(engine.settings.num_players)]
     assert engine.state.phase == "end"
+
+
+def test_draft() -> None:
+    engine = Engine(
+        settings=Settings(
+            use_drafting=True,
+            bank="med",
+            min_difficulty=4,
+            max_difficulty=7,
+            max_num_tasks=4,
+        ),
+        seed=44,
+    )
+    print(engine.state.task_idxs)
+
+    while engine.state.phase != "end":
+        valid_actions = engine.valid_actions()
+        action = valid_actions[-1]
+        engine.move(action)
+
+    print(engine.state.actions)

@@ -28,6 +28,7 @@ add_subdirectory(src/cpp_game/extern/pybind11)
 # Add source files
 set(SOURCES
     src/cpp_game/engine.cc
+    src/cpp_game/settings.cc
     src/cpp_game/tasks.cc
     src/cpp_game/rollout.cc
     src/cpp_game/thread_pool.cc

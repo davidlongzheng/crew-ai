@@ -28,18 +28,33 @@ class Card:
         return str(self)
 
 
-ActionType = Literal["play", "signal", "nosignal"]
-Phase = Literal["play", "signal", "end"]
+ActionType = Literal["draft", "nodraft", "play", "signal", "nosignal"]
+Phase = Literal["draft", "play", "signal", "end"]
 
 
 @dataclass(frozen=True)
 class Action:
     player: int
     type: ActionType
-    card: Card | None
+    card: Card | None = None
+    task_idx: int | None = None
+
+    def __post_init__(self):
+        if self.type in ["nodraft", "nosignal"]:
+            assert self.card is None and self.task_idx is None
+        elif self.type in ["play", "signal"]:
+            assert self.card is not None and self.task_idx is None
+        elif self.type == "draft":
+            assert self.card is None and self.task_idx is not None
+        else:
+            raise ValueError(self.type)
 
     def __str__(self):
-        if self.type == "nosignal":
+        if self.type == "draft":
+            return f"P{self.player} drafts {self.task_idx}."
+        elif self.type == "nodraft":
+            return f"P{self.player} does not draft."
+        elif self.type == "nosignal":
             return f"P{self.player} does not signal."
         return f"P{self.player} {self.type}s {self.card}."
 

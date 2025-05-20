@@ -11,10 +11,9 @@ import cpp_game
 
 from ..game.engine import Engine
 from ..game.settings import Settings
-from ..game.utils import card_to_tuple, encode_hand
-from ..lib.types import StrMap, TaskIdxs
+from ..game.utils import encode_action, encode_hand, encode_tasks
+from ..lib.types import StrMap
 from .actor import BatchActor
-from .aux_info import AuxInfoTracker
 from .featurizer import featurize
 
 
@@ -50,16 +49,6 @@ def do_batch_rollout(
     log_probs_pr_pt: list[list[list[float]]] = [[] for _ in range(num_rollouts)]
     actions_pr_pt: list[list[int]] = [[] for _ in range(num_rollouts)]
     rewards_pr_pt: list[list[float]] = [[] for _ in range(num_rollouts)]
-    task_idxs_pr: list[TaskIdxs] = [[] for _ in range(num_rollouts)]
-    aux_tracker_pr: list[AuxInfoTracker] = [
-        AuxInfoTracker(settings, engine) for engine in engines
-    ]
-
-    # Task assignment
-    for rollout_idx, engine in enumerate(engines):
-        for player, tasks in enumerate(engine.state.assigned_tasks):
-            player_idx = engine.state.get_player_idx(player)
-            task_idxs_pr[rollout_idx] += [(task.task_idx, player_idx) for task in tasks]
 
     if actor:
         actor.start()
@@ -72,7 +61,7 @@ def do_batch_rollout(
             # Player index relative to the captain.
             player_idx = engine.state.get_player_idx()
             turn = engine.state.get_turn()
-            assert engine.state.phase in ["play", "signal"]
+            assert engine.state.phase in ["draft", "play", "signal"]
             private_inputs_pr_pt[rollout_idx].append(
                 {
                     "hand": encode_hand(
@@ -82,10 +71,17 @@ def do_batch_rollout(
                     "player_idx": player_idx,
                     "turn": turn,
                     "phase": engine.state.phase_idx,
+                    "task_idxs": encode_tasks(engine.state),
                 }
             )
             valid_actions = engine.valid_actions()
-            if engine.state.phase == "play":
+            if engine.state.phase == "draft":
+                assert all(
+                    (x.type == "draft" and x.task_idx is not None)
+                    or (x.type == "nodraft" and x.task_idx is None)
+                    for x in valid_actions
+                )
+            elif engine.state.phase == "play":
                 assert all(
                     x.type == "play" and x.card is not None for x in valid_actions
                 )
@@ -96,9 +92,8 @@ def do_batch_rollout(
                     for x in valid_actions
                 )
             valid_actions_pr_pt[rollout_idx].append(
-                [card_to_tuple(x.card, settings) for x in valid_actions]
+                [encode_action(x, settings) for x in valid_actions]
             )
-            aux_tracker_pr[rollout_idx].on_decision()
 
         # Purposefully create dummy entries for finished
         # samples so that the hidden state of the policy model is
@@ -109,7 +104,6 @@ def do_batch_rollout(
                 [x[-1] for x in public_history_pr_pt],
                 [x[-1] for x in private_inputs_pr_pt],
                 [x[-1] for x in valid_actions_pr_pt],
-                task_idxs_pr,
                 settings,
                 non_feature_dims=1,
                 device=device,
@@ -119,7 +113,7 @@ def do_batch_rollout(
             log_probs_pr = [
                 np.array(
                     [np.log(1.0 / len(x[-1]))] * len(x[-1])
-                    + [-float("inf")] * (settings.max_hand_size + 1 - len(x[-1]))
+                    + [-float("inf")] * (settings.max_num_actions - len(x[-1]))
                 )
                 for x in valid_actions_pr_pt
             ]
@@ -148,15 +142,15 @@ def do_batch_rollout(
             public_history_pr_pt[rollout_idx].append(
                 {
                     "trick": engine.state.trick,
-                    "card": card_to_tuple(action.card, settings),
+                    "action": encode_action(action, settings),
                     "player_idx": player_idx,
                     "turn": turn,
                     "phase": engine.state.phase_idx,
+                    "task_idxs": encode_tasks(engine.state),
                 }
             )
             reward = engine.move(action)
             rewards_pr_pt[rollout_idx].append(reward)
-            aux_tracker_pr[rollout_idx].on_move(action)
 
     if actor:
         actor.stop()
@@ -169,7 +163,6 @@ def do_batch_rollout(
         actions_pt = actions_pr_pt[rollout_idx]
         log_probs_pt = log_probs_pr_pt[rollout_idx]
         rewards_pt = rewards_pr_pt[rollout_idx]
-        task_idxs = task_idxs_pr[rollout_idx]
 
         public_history_pt.pop()
         assert (
@@ -192,10 +185,6 @@ def do_batch_rollout(
             player = engine.state.get_player(player_idx)
             num_success_tasks_pp.append((num_success_pp[player], num_tasks_pp[player]))
 
-        aux_tracker_pr[rollout_idx].on_game_end()
-        aux_info_pt = aux_tracker_pr[rollout_idx].get_aux_info()
-        assert len(private_inputs_pt) == len(aux_info_pt)
-
         ret.append(
             {
                 "public_history": public_history_pt,
@@ -205,8 +194,6 @@ def do_batch_rollout(
                 "actions": actions_pt,
                 "rewards": rewards_pt,
                 "num_success_tasks_pp": num_success_tasks_pp,
-                "task_idxs": task_idxs,
-                "aux_infos": aux_info_pt,
                 "win": win,
             }
         )
@@ -278,11 +265,11 @@ def do_batch_rollout_cpp(
         if actor:
             inps = TensorDict(
                 hist=TensorDict(
-                    player_idxs=move_inps.hist_player_idxs,
-                    tricks=move_inps.hist_tricks,
-                    cards=move_inps.hist_cards,
-                    turns=move_inps.hist_turns,
-                    phases=move_inps.hist_phases,
+                    player_idx=move_inps.hist_player_idx,
+                    trick=move_inps.hist_trick,
+                    action=move_inps.hist_action,
+                    turn=move_inps.hist_turn,
+                    phase=move_inps.hist_phase,
                 ),
                 private=TensorDict(
                     hand=move_inps.hand,
@@ -290,9 +277,9 @@ def do_batch_rollout_cpp(
                     trick=move_inps.trick,
                     turn=move_inps.turn,
                     phase=move_inps.phase,
+                    task_idxs=move_inps.task_idxs,
                 ),
                 valid_actions=move_inps.valid_actions,
-                task_idxs=move_inps.task_idxs,
             )
             inps = inps.to(device)
             log_probs_pr = actor.get_log_probs(inps)
@@ -325,11 +312,11 @@ def do_batch_rollout_cpp(
     ret = TensorDict(
         inps=TensorDict(
             hist=TensorDict(
-                player_idxs=results.hist_player_idxs,
-                tricks=results.hist_tricks,
-                cards=results.hist_cards,
-                turns=results.hist_turns,
-                phases=results.hist_phases,
+                player_idx=results.hist_player_idx,
+                trick=results.hist_trick,
+                action=results.hist_action,
+                turn=results.hist_turn,
+                phase=results.hist_phase,
             ),
             private=TensorDict(
                 hand=results.hand,
@@ -337,9 +324,9 @@ def do_batch_rollout_cpp(
                 trick=results.trick,
                 turn=results.turn,
                 phase=results.phase,
+                task_idxs=results.task_idxs,
             ),
             valid_actions=results.valid_actions,
-            task_idxs=results.task_idxs,
         ),
         orig_log_probs=results.log_probs,
         actions=results.actions,

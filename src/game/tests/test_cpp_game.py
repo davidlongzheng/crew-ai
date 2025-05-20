@@ -26,6 +26,8 @@ def assert_matching_settings(settings, cpp_settings):
         "max_num_tasks",
         "task_bonus",
         "win_bonus",
+        "use_drafting",
+        "num_draft_tricks",
     ]:
         assert getattr(settings, field) == getattr(cpp_settings, field)
 
@@ -50,7 +52,7 @@ def assert_matching_tasks(engine, cpp_engine):
             assert task.in_one_trick == cpp_task.in_one_trick
 
 
-def init_matching_engines(seed, task_idxs, single_signal):
+def init_matching_engines(seed, task_idxs, single_signal, use_drafting):
     settings = get_preset(DEFAULT_PRESET)
     settings = replace(
         settings,
@@ -58,6 +60,7 @@ def init_matching_engines(seed, task_idxs, single_signal):
         task_idxs=tuple(task_idxs),
         use_signals=True,
         single_signal=single_signal,
+        use_drafting=use_drafting,
     )
     cpp_settings = settings.to_cpp()
     assert_matching_settings(settings, cpp_settings)
@@ -87,6 +90,7 @@ def to_cpp_action(action):
         action.player,
         to_cpp_action_type(action.type),
         to_cpp_card(action.card) if action.card else None,
+        action.task_idx,
     )
 
 
@@ -140,16 +144,20 @@ def assert_matching_state(engine, cpp_engine):
 
 
 @pytest.mark.parametrize("single_signal", [True, False])
-def test_cpp_game(single_signal):
+@pytest.mark.parametrize("use_drafting", [True, False])
+def test_cpp_game(single_signal, use_drafting):
     num_tasks = len(TASK_DEFS)
-    step_size = 12
+    step_size = 8
     for task_start_idx in range(0, num_tasks, step_size):
         task_idxs = list(
             range(task_start_idx, min(task_start_idx + step_size, num_tasks))
         )
         for engine_seed in range(20):
             engine, cpp_engine = init_matching_engines(
-                seed=engine_seed, task_idxs=task_idxs, single_signal=single_signal
+                seed=engine_seed,
+                task_idxs=task_idxs,
+                single_signal=single_signal,
+                use_drafting=use_drafting,
             )
 
             assert_matching_state(engine, cpp_engine)

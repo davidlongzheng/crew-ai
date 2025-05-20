@@ -7,7 +7,7 @@ from torch import Tensor, nn
 
 from ..game.settings import Settings
 from .embedding import (
-    CardModel,
+    ActionModel,
     HandModel,
     PaddedEmbed,
     TasksModel,
@@ -18,19 +18,26 @@ from .utils import MLP
 
 
 def get_splits_and_phases(settings):
+    if settings.use_drafting:
+        splits = [settings.num_players * settings.num_draft_tricks]
+        phases = [2]
+    else:
+        splits = []
+        phases = []
+
     if settings.use_signals:
         if settings.single_signal:
-            splits = [
+            splits += [
                 settings.num_players,
                 settings.num_players * settings.num_tricks,
             ]
-            phases = [1, 0]
+            phases += [1, 0]
         else:
-            splits = [settings.num_players] * (settings.num_tricks * 2)
-            phases = [1, 0] * settings.num_tricks
+            splits += [settings.num_players] * (settings.num_tricks * 2)
+            phases += [1, 0] * settings.num_tricks
     else:
-        splits = [settings.num_players * settings.num_tricks]
-        phases = [0]
+        splits += [settings.num_players * settings.num_tricks]
+        phases += [0]
 
     assert sum(splits) == settings.get_seq_length()
     assert len(splits) == len(phases)
@@ -116,9 +123,10 @@ class HistoryModel(nn.Module):
         self,
         player_embed: nn.Module,
         trick_embed: nn.Module,
-        card_embed: nn.Module,
+        action_embed: nn.Module,
         turn_embed: nn.Module,
         phase_embed: nn.Module,
+        tasks_embed: nn.Module,
         embed_dim: int,
         hidden_dim: int,
         num_layers: int,
@@ -131,9 +139,10 @@ class HistoryModel(nn.Module):
         super().__init__()
         self.player_embed = player_embed
         self.trick_embed = trick_embed
-        self.card_embed = card_embed
+        self.action_embed = action_embed
         self.turn_embed = turn_embed
         self.phase_embed = None if phase_branch else phase_embed
+        self.tasks_embed = tasks_embed
         self.phase_branch = phase_branch
         input_dim = (4 if phase_branch else 5) * embed_dim + tasks_embed_dim
 
@@ -172,20 +181,20 @@ class HistoryModel(nn.Module):
         hist_inps: TensorDict,
         tasks_embed: Tensor,
     ) -> Tensor:
-        player_embed = self.player_embed(hist_inps["player_idxs"])
-        trick_embed = self.trick_embed(hist_inps["tricks"])
-        card_embed = self.card_embed(hist_inps["cards"])
-        turn_embed = self.turn_embed(hist_inps["turns"])
+        player_embed = self.player_embed(hist_inps["player_idx"])
+        trick_embed = self.trick_embed(hist_inps["trick"], hist_inps["phase"])
+        action_embed = self.action_embed(hist_inps["action"], self.single_step)
+        turn_embed = self.turn_embed(hist_inps["turn"])
         inps = [
             player_embed,
             trick_embed,
-            card_embed,
+            action_embed,
             turn_embed,
+            tasks_embed,
         ]
         if not self.phase_branch:
-            phase_embed = cast(nn.Module, self.phase_embed)(hist_inps["phases"])
+            phase_embed = cast(nn.Module, self.phase_embed)(hist_inps["phase"])
             inps.append(phase_embed)
-        inps.append(tasks_embed)
         x = torch.cat(inps, dim=-1)
         if self.single_step:
             assert not self.training
@@ -202,7 +211,7 @@ class HistoryModel(nn.Module):
             x = x.unsqueeze(dim=-2)
 
         if self.phase_branch:
-            x, state = self.lstm(x, self.state, hist_inps["phases"], self.single_step)
+            x, state = self.lstm(x, self.state, hist_inps["phase"], self.single_step)
         else:
             x, state = self.lstm(x, self.state)
 
@@ -279,30 +288,26 @@ class BackboneModel(nn.Module):
         self,
         hist_inps: TensorDict,
         private_inps: TensorDict,
-        task_idxs: Tensor,
     ) -> Tensor:
-        tasks_embed = self.tasks_embed(task_idxs)
-        if len(private_inps["player_idx"].shape) == 2:
-            _, T = private_inps["player_idx"].shape
-            # (B, F)
-            assert len(tasks_embed.shape) == 2
-            tasks_embed = tasks_embed.unsqueeze(-2).expand(-1, T, -1)
-
-        hist_embed: Tensor = self.hist_model(
-            hist_inps=hist_inps,
-            tasks_embed=tasks_embed,
-        )
+        tasks_embed = self.tasks_embed(private_inps["task_idxs"])
+        hist_embed: Tensor = self.hist_model(hist_inps, tasks_embed)
         hand_embed: Tensor = self.hand_embed(private_inps["hand"])
         player_embed = self.player_embed(private_inps["player_idx"])
-        trick_embed = self.trick_embed(private_inps["trick"])
+        trick_embed = self.trick_embed(private_inps["trick"], private_inps["phase"])
         turn_embed = self.turn_embed(private_inps["turn"])
         phase_embed = self.phase_embed(private_inps["phase"])
-        private_embed = torch.cat(
-            [player_embed, trick_embed, turn_embed, phase_embed], dim=-1
+        x = torch.cat(
+            [
+                hist_embed,
+                player_embed,
+                trick_embed,
+                turn_embed,
+                phase_embed,
+                tasks_embed,
+                hand_embed,
+            ],
+            dim=-1,
         )
-
-        inps = [hist_embed, private_embed, tasks_embed, hand_embed]
-        x = torch.cat(inps, dim=-1)
         x = self.layer_norm(x)
         x = self.mlp(x)
         if self.final_layer_norm:
@@ -316,7 +321,7 @@ class PolicyHead(nn.Module):
     def __init__(
         self,
         query_input_dim: int,
-        card_embed: CardModel,
+        action_embed: ActionModel,
         phase_embed: PaddedEmbed,
         hidden_dim: int,
         num_hidden_layers: int,
@@ -328,10 +333,10 @@ class PolicyHead(nn.Module):
     ):
         super().__init__()
 
-        self.card_embed = card_embed
+        self.action_embed = action_embed
         self.phase_embed = None if phase_branch else phase_embed
         self.phase_branch = phase_branch
-        key_input_dim = card_embed.output_dim + (
+        key_input_dim = action_embed.output_dim + (
             0 if phase_branch else phase_embed.output_dim
         )
         self.key_layer_norm = nn.LayerNorm(key_input_dim)
@@ -381,7 +386,8 @@ class PolicyHead(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """valid_actions=(...,A,2)"""
 
-        valid_actions_embed = self.card_embed(valid_actions)
+        single_step = len(valid_actions.shape) == 3
+        valid_actions_embed = self.action_embed(valid_actions, single_step)
         key_inputs = [valid_actions_embed]
         if not self.phase_branch:
             phase_embed = cast(nn.Module, self.phase_embed)(phase)
@@ -503,9 +509,7 @@ class PolicyValueModel(nn.Module):
         self.backbone_model.stop_single_step()
 
     def forward(self, inps):
-        backbone_embed = self.backbone_model(
-            inps["hist"], inps["private"], inps["task_idxs"]
-        )
+        backbone_embed = self.backbone_model(inps["hist"], inps["private"])
         aux_info_pred = (
             self.aux_info_head(backbone_embed) if self.aux_info_head else None
         )
@@ -529,9 +533,10 @@ def get_models(
     hist_model = HistoryModel(
         embed_models["player"],
         embed_models["trick"],
-        embed_models["card"],
+        embed_models["action"],
         embed_models["turn"],
         embed_models["phase"],
+        embed_models["tasks"],
         hp.embed_dim,
         hp.hist_hidden_dim,
         hp.hist_num_layers,
@@ -567,7 +572,7 @@ def get_models(
 
     policy_head = PolicyHead(
         backbone_model.output_dim,
-        cast(CardModel, embed_models["card"]),
+        cast(ActionModel, embed_models["action"]),
         cast(PaddedEmbed, embed_models["phase"]),
         hp.policy_hidden_dim,
         hp.policy_num_hidden_layers,
