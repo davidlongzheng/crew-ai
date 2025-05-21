@@ -12,6 +12,7 @@ from typing import Any, cast
 import click
 import numpy as np
 import torch
+from ipdb import launch_ipdb_on_exception
 from loguru import logger
 from tensordict import TensorDict
 from torch import GradScaler, nn
@@ -557,6 +558,7 @@ def train_one_round(
                     "num_early_stops",
                     "num_early_stop_max_kls",
                     "num_grad_clips",
+                    "num_resets",
                 ]:
                     writer.add_scalar(
                         f"counter/{k}",
@@ -601,7 +603,7 @@ def train(
     start_round: int,
     gc: Counter,
     engine_seeds: list[int] | None,
-    skip_checkpoint: bool,
+    rng_state,
 ) -> None:
     timer = Timer(writer)
     cpp_settings = settings.to_cpp()
@@ -611,7 +613,26 @@ def train(
     )
     actor = ModelBatchActor(pv_model)
 
-    for round in range(start_round, hp.num_rounds):
+    if rng_state is not None:
+        torch.set_rng_state(rng_state[0])
+        torch.cuda.set_rng_state_all(rng_state[1])
+
+    last_win_rate = 0.0
+    round = start_round
+    while round < hp.num_rounds:
+        torch.save(
+            {
+                "round": round,
+                "pv_model": pv_model.state_dict(),
+                "optim": optim.state_dict(),
+                "lr_sched": lr_sched.state_dict(),
+                "gc": gc,
+                "scaler": (scaler.state_dict() if scaler else None),
+                "rng_state": (torch.get_rng_state(), torch.cuda.get_rng_state_all()),
+            },
+            outdir / "checkpoint_unverified.pth",
+        )
+
         start_time = time.time()
         pv_model.eval()
 
@@ -632,10 +653,24 @@ def train(
         if hp.profile_memory:
             print_memory_usage("after rollout")
 
+        win_rate = td["win"].float().mean()
+        if win_rate < last_win_rate - hp.reset_thresh:
+            logger.warning(
+                f"Win rate {win_rate:.3f} is less than {last_win_rate:.3f} by more than {hp.reset_thresh:.3f}. Resetting model."
+            )
+            state_dict = torch.load(outdir / "checkpoint.pth", weights_only=False)
+            pv_model.load_state_dict(state_dict["pv_model"])
+            optim.load_state_dict(state_dict["optim"])
+            lr_sched.load_state_dict(state_dict["lr_sched"])
+            gc["num_resets"] += 1
+            continue
+
+        (outdir / "checkpoint_unverified.pth").replace(outdir / "checkpoint.pth")
+        torch.save(td, outdir / "td.pth")
+
         mean_reward = td["rewards"].sum(dim=-1).mean()
         writer.add_scalar("rewards/reward_mean", mean_reward, round)
         mean_frac_success = td["frac_success"].mean()
-        win_rate = td["win"].float().mean()
         assert mean_frac_success <= 1.0
         writer.add_scalar("rewards/frac_success_mean", mean_frac_success, round)
         writer.add_scalar("rewards/win_rate", win_rate, round)
@@ -684,24 +719,13 @@ def train(
             print_memory_usage("after train")
             return
 
-        if not skip_checkpoint:
-            torch.save(
-                {
-                    "round": round + 1,
-                    "td": td,
-                    "pv_model": pv_model.state_dict(),
-                    "optim": optim.state_dict(),
-                    "lr_sched": lr_sched.state_dict(),
-                    "gc": gc,
-                    "scaler": (scaler.state_dict() if scaler else None),
-                },
-                outdir / "checkpoint.pth",
-            )
-
         elapsed = time.time() - start_time
         logger.info(
             f"Round {round}: mean_reward={mean_reward:.3f}, win_rate={win_rate:.3f}, elapsed={elapsed:.3f}s"
         )
+
+        last_win_rate = win_rate
+        round += 1
 
 
 @click.command()
@@ -760,9 +784,9 @@ def train(
     "--win-cache-dir", type=Path, default=CANON_WIN_CACHE_DIR, help="Win cache dir."
 )
 @click.option(
-    "--skip-checkpoint",
+    "--no-error-catch",
     is_flag=True,
-    help="Skip checkpoint saving",
+    help="Don't catch errors",
 )
 def main(
     outdir: Path,
@@ -776,13 +800,12 @@ def main(
     copy_dir: Path | None,
     win_thresh: float | None,
     win_cache_dir: Path,
-    skip_checkpoint: bool,
+    no_error_catch: bool,
 ) -> None:
     outdir = outdir.resolve()
-    # nocommit a bit hacky
-    assert autoindex_runs == ("run" not in outdir.name), (
-        "We expect outdir to be named with run_* unless autoindex_runs=True"
-    )
+    assert (not autoindex_runs) == (
+        outdir.name.startswith("run_") or outdir.name.startswith("seed_")
+    ), "We expect outdir to be named with run_* or seed_* unless autoindex_runs=True"
 
     if autoindex_runs:
         max_run_idx = max(
@@ -814,13 +837,8 @@ def main(
 
     outdir.mkdir(parents=True, exist_ok=True)
     logger.add(outdir / "train.log")
+    assert not (outdir / "_running").exists()
     (outdir / "_running").touch()
-
-    if (outdir / "checkpoint.pth").exists():
-        logger.info("Loading state from checkpoint")
-        orig_state_dict = torch.load(outdir / "checkpoint.pth", weights_only=False)
-    else:
-        orig_state_dict = {}
 
     try:
         logger.info("** Training Configuration **")
@@ -845,6 +863,13 @@ def main(
         scaler = (
             GradScaler() if device.type == "cuda" and hp.use_mixed_precision else None
         )
+
+        if (outdir / "checkpoint.pth").exists():
+            logger.info("Loading state from checkpoint")
+            orig_state_dict = torch.load(outdir / "checkpoint.pth", weights_only=False)
+        else:
+            orig_state_dict = {}
+
         for obj, key in [
             (pv_model, "pv_model"),
             (optim, "optim"),
@@ -876,28 +901,25 @@ def main(
 
         logger.info("** Training **")
         with CustomSummaryWriter(str(outdir)) as writer:
-            train(
-                device,
-                pv_model,
-                optim,
-                lr_sched,
-                scaler,
-                settings,
-                hp,
-                writer,
-                outdir,
-                orig_state_dict.get("round", 0),
-                orig_state_dict.get("gc", Counter()),
-                engine_seeds,
-                skip_checkpoint,
-            )
+            with launch_ipdb_on_exception() if not no_error_catch else nullcontext():
+                train(
+                    device,
+                    pv_model,
+                    optim,
+                    lr_sched,
+                    scaler,
+                    settings,
+                    hp,
+                    writer,
+                    outdir,
+                    orig_state_dict.get("round", 0),
+                    orig_state_dict.get("gc", Counter()),
+                    engine_seeds,
+                    orig_state_dict.get("rng_state", None),
+                )
     finally:
         (outdir / "_running").unlink()
 
 
 if __name__ == "__main__":
-    # torch.autograd.set_detect_anomaly(True)
-    from ipdb import launch_ipdb_on_exception
-
-    with launch_ipdb_on_exception():
-        main()
+    main()

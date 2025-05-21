@@ -221,7 +221,7 @@ void Rollout::record_move_inputs()
     player_idx_pt.push_back(player_idx);
     trick_pt.push_back(engine->state.trick);
     turn_pt.push_back(turn);
-    phase_pt.push_back(engine->state.phase_idx());
+    phase_pt.push_back(settings.get_phase_idx(engine->state.phase));
     add_tasks(task_idxs_pt);
 
     // Record valid actions
@@ -247,7 +247,7 @@ void Rollout::move(int action_idx)
     hist_trick_pt.push_back(engine->state.trick);
     add_action(hist_action_pt, action);
     hist_turn_pt.push_back(engine->state.get_turn());
-    hist_phase_pt.push_back(engine->state.phase_idx());
+    hist_phase_pt.push_back(settings.get_phase_idx(engine->state.phase));
 
     // Execute the action and record reward
     float reward = engine->move(action);

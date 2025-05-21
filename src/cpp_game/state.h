@@ -48,21 +48,6 @@ struct State
         return safe_mod(player - captain, num_players);
     }
 
-    int phase_idx() const
-    {
-        switch (phase)
-        {
-        case Phase::kPlay:
-            return 0;
-        case Phase::kSignal:
-            return 1;
-        case Phase::kDraft:
-            return 2;
-        default:
-            return -1;
-        }
-    }
-
     int get_player(int player_idx) const
     {
         return safe_mod(captain + player_idx, num_players);

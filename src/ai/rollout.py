@@ -70,7 +70,7 @@ def do_batch_rollout(
                     "trick": engine.state.trick,
                     "player_idx": player_idx,
                     "turn": turn,
-                    "phase": engine.state.phase_idx,
+                    "phase": settings.get_phase_idx(engine.state.phase),
                     "task_idxs": encode_tasks(engine.state),
                 }
             )
@@ -145,7 +145,7 @@ def do_batch_rollout(
                     "action": encode_action(action, settings),
                     "player_idx": player_idx,
                     "turn": turn,
-                    "phase": engine.state.phase_idx,
+                    "phase": settings.get_phase_idx(engine.state.phase),
                     "task_idxs": encode_tasks(engine.state),
                 }
             )

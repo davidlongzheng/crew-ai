@@ -38,6 +38,9 @@ class Hyperparams:
     early_stop_num_epochs: int | None = None
     policy_early_stop_max_kl: float = 0.10
     grad_norm_clip: float = 0.3716
+    # Reset the model if the win rate drops by more than this threshold
+    # compared to the previous win rate.
+    reset_thresh: float = 0.02
 
     # For advantage calculation
     # How much to discount future TDs in GAE calculation.

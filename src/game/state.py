@@ -35,14 +35,6 @@ class State:
         player = self.cur_player if player is None else player
         return (player - self.captain) % self.num_players
 
-    @property
-    def phase_idx(self):
-        return {
-            "play": 0,
-            "signal": 1,
-            "draft": 2,
-        }[self.phase]
-
     def get_player(self, player_idx):
         return (self.captain + player_idx) % self.num_players
 

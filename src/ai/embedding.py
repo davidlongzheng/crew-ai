@@ -80,6 +80,8 @@ class PaddedEmbed(nn.Module):
 
     def forward(self, x):
         if self.embed_type == "embed":
+            assert (x >= -1).all()
+            assert (x < self.num_embeddings).all()
             x = self.embed((x + 1).to(torch.int32))
         elif self.embed_type == "one_hot":
             x = self.embed(
@@ -155,15 +157,21 @@ class TrickModel(nn.Module):
         self, embed_dim: int, embed_dropout: float, embed_type: str, settings: Settings
     ):
         super().__init__()
-        num_embeddings = (
-            settings.num_tricks + settings.use_drafting * settings.num_draft_tricks
-        )
+        self.use_drafting = settings.use_drafting
+        if self.use_drafting:
+            self.draft_delta = settings.num_tricks
+            self.draft_phase = settings.get_phase_idx("draft")
+            num_embeddings = settings.num_tricks + settings.num_draft_tricks
+        else:
+            num_embeddings = settings.num_tricks
+
         self.embed = PaddedEmbed(num_embeddings, embed_dim, embed_dropout, embed_type)
-        self.draft_delta = settings.num_tricks if settings.use_drafting else None
 
     def forward(self, trick, phase):
-        if self.draft_delta:
-            trick = torch.where(phase == 2, trick + self.draft_delta, trick)
+        if self.use_drafting:
+            trick = torch.where(
+                phase == self.draft_phase, trick + self.draft_delta, trick
+            )
 
         return self.embed(trick)
 
@@ -269,32 +277,30 @@ class ActionModel(nn.Module):
     ):
         super().__init__()
         self.card_model = card_model
-        self.task_model = task_model if settings.use_drafting else None
-        self.draft_length = (
-            settings.num_draft_tricks * settings.num_players
-            if settings.use_drafting
-            else 0
-        )
         self.output_dim = card_model.output_dim
-        if self.task_model:
+        self.use_drafting = settings.use_drafting
+        if self.use_drafting:
+            self.task_model = task_model
             assert card_model.output_dim == task_model.output_dim
 
     def forward(self, x, single_step):
-        if self.draft_length == 0:
+        if not self.use_drafting:
             return self.card_model(x)
 
-        assert self.task_model is not None
-
-        # x = (N, T, 2) or (N, T, A, 2) or (N, 2) or (N, A, 2)
         if single_step:
-            is_draft = (x[0, 1] if len(x.shape) == 2 else x[0, 0, 1]).item() == -1
+            # x = (N, 2) or (N, A, 2)
+            x_ex = x[0, 1] if len(x.shape) == 2 else x[0, 0, 1]
+            is_draft = x_ex.item() == -1
             if is_draft:
                 return self.task_model(x[..., 0])
             else:
                 return self.card_model(x)
 
-        task_embed = self.task_model(x[:, : self.draft_length, ..., 0])
-        card_embed = self.card_model(x[:, self.draft_length :])
+        # x = (N, T, 2) or (N, T, A, 2)
+        x_ex = x[0, :, 1] if len(x.shape) == 3 else x[0, :, 0, 1]
+        draft_length = (x_ex >= 0).int().argmax().item()
+        task_embed = self.task_model(x[:, :draft_length, ..., 0])
+        card_embed = self.card_model(x[:, draft_length:])
         return torch.cat([task_embed, card_embed], dim=1)
 
 
@@ -367,7 +373,7 @@ def get_embed_models(
         "task": task_model,
         "tasks": tasks_model,
         "phase": PaddedEmbed(
-            3 if settings.use_drafting else 2 if settings.use_signals else 1,
+            settings.num_phases,
             hp.embed_dim,
             hp.embed_dropout,
             embed_type="embed",

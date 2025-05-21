@@ -114,6 +114,23 @@ struct Settings
         }
     }
 
+    int get_phase_idx(Phase phase) const
+    {
+        switch (phase)
+        {
+        case Phase::kPlay:
+            return 0;
+        case Phase::kSignal:
+            assert(use_signals);
+            return 1;
+        case Phase::kDraft:
+            assert(use_drafting);
+            return use_signals ? 2 : 1;
+        default:
+            throw std::runtime_error("Invalid phase");
+        }
+    }
+
     // Validation
     bool validate() const
     {

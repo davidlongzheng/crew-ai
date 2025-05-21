@@ -131,6 +131,18 @@ class Settings:
         else:
             assert False
 
+    def get_phase_idx(self, phase: str):
+        if phase == "play":
+            return 0
+        elif phase == "signal":
+            assert self.use_signals
+            return 1
+        elif phase == "draft":
+            assert self.use_drafting
+            return 2 if self.use_signals else 1
+        else:
+            raise ValueError(phase)
+
     @cached_property
     def use_nosignal(self):
         return self.use_signals and not self.single_signal and not self.cheating_signal

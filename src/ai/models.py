@@ -20,7 +20,7 @@ from .utils import MLP
 def get_splits_and_phases(settings):
     if settings.use_drafting:
         splits = [settings.num_players * settings.num_draft_tricks]
-        phases = [2]
+        phases = [settings.get_phase_idx("draft")]
     else:
         splits = []
         phases = []
@@ -31,13 +31,19 @@ def get_splits_and_phases(settings):
                 settings.num_players,
                 settings.num_players * settings.num_tricks,
             ]
-            phases += [1, 0]
+            phases += [
+                settings.get_phase_idx("signal"),
+                settings.get_phase_idx("play"),
+            ]
         else:
             splits += [settings.num_players] * (settings.num_tricks * 2)
-            phases += [1, 0] * settings.num_tricks
+            phases += [
+                settings.get_phase_idx("signal"),
+                settings.get_phase_idx("play"),
+            ]
     else:
         splits += [settings.num_players * settings.num_tricks]
-        phases += [0]
+        phases += [settings.get_phase_idx("play")]
 
     assert sum(splits) == settings.get_seq_length()
     assert len(splits) == len(phases)
@@ -81,7 +87,6 @@ class BranchedFF(nn.Module):
         self.set_splits(settings)
 
     def set_splits(self, settings):
-        assert settings.use_signals, "Must use signals with BranchedLSTM."
         splits, phases = get_splits_and_phases(settings)
 
         self.register_buffer(
@@ -126,7 +131,6 @@ class HistoryModel(nn.Module):
         action_embed: nn.Module,
         turn_embed: nn.Module,
         phase_embed: nn.Module,
-        tasks_embed: nn.Module,
         embed_dim: int,
         hidden_dim: int,
         num_layers: int,
@@ -142,7 +146,6 @@ class HistoryModel(nn.Module):
         self.action_embed = action_embed
         self.turn_embed = turn_embed
         self.phase_embed = None if phase_branch else phase_embed
-        self.tasks_embed = tasks_embed
         self.phase_branch = phase_branch
         input_dim = (4 if phase_branch else 5) * embed_dim + tasks_embed_dim
 
@@ -362,6 +365,7 @@ class PolicyHead(nn.Module):
         self.use_nosignal = settings.use_nosignal
         if settings.use_nosignal:
             # pre-cache p_signal
+            self.signal_phase = settings.get_phase_idx("signal")
             assert signal_prior in ["exp", "lin"]
             trick = torch.arange(settings.num_tricks).float()
             num_tricks_left = settings.num_tricks - trick
@@ -419,7 +423,7 @@ class PolicyHead(nn.Module):
             # how many other tricks there are.
 
             # (...)
-            signal_phase = phase == 1
+            signal_phase = phase == self.signal_phase
             # (...)
             n_valid_actions = (valid_actions[..., 0] != -1).sum(dim=-1).float()
             p_signal = cast(Tensor, self.p_signal)[trick.long()]
@@ -536,7 +540,6 @@ def get_models(
         embed_models["action"],
         embed_models["turn"],
         embed_models["phase"],
-        embed_models["tasks"],
         hp.embed_dim,
         hp.hist_hidden_dim,
         hp.hist_num_layers,
