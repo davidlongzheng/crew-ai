@@ -79,11 +79,13 @@ void test_single_rollout()
         {0, 0, 1, 2}, /* task_idxs */
         std::nullopt, /* min_difficulty */
         std::nullopt, /* max_difficulty */
+        std::nullopt, /* difficulty_distro */
         std::nullopt, /* max_num_tasks */
         false,        /* use_drafting */
         2,            /* num_draft_tricks */
         5.0,          /* task_bonus */
-        1.0           /* win_bonus */
+        1.0,          /* win_bonus */
+        true          /* weight_by_difficulty */
     );
 
     // Create a rollout
@@ -132,11 +134,13 @@ void test_batch_rollout()
         {0, 0, 1, 2}, /* task_idxs */
         std::nullopt, /* min_difficulty */
         std::nullopt, /* max_difficulty */
+        std::nullopt, /* difficulty_distro */
         std::nullopt, /* max_num_tasks */
         false,        /* use_drafting */
         2,            /* num_draft_tricks */
         5.0,          /* task_bonus */
-        1.0           /* win_bonus */
+        1.0,          /* win_bonus */
+        true          /* weight_by_difficulty */
     );
 
     // Create a batch rollout

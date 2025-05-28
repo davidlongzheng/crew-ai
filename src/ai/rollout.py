@@ -8,13 +8,12 @@ import torch
 from tensordict import TensorDict
 
 import cpp_game
-
-from ..game.engine import Engine
-from ..game.settings import Settings
-from ..game.utils import encode_action, encode_hand, encode_tasks
-from ..lib.types import StrMap
-from .actor import BatchActor
-from .featurizer import featurize
+from ai.actor import BatchActor
+from ai.featurizer import featurize
+from game.engine import Engine
+from game.settings import Settings
+from game.utils import encode_action, encode_hand, encode_tasks
+from lib.types import StrMap
 
 
 def do_batch_rollout(
@@ -175,15 +174,15 @@ def do_batch_rollout(
         )
 
         win = engine.state.status == "success"
-        num_success_pp = [
-            sum(x.status == "success" for x in tasks)
-            for tasks in engine.state.assigned_tasks
-        ]
-        num_tasks_pp = [len(tasks) for tasks in engine.state.assigned_tasks]
-        num_success_tasks_pp: list[tuple] = []
+        difficulty = engine.state.difficulty
+        task_idxs_no_pt = [-1 for _ in range(settings.get_max_num_tasks())]
+        task_success = [False for _ in range(settings.get_max_num_tasks())]
         for player_idx in range(settings.num_players):
             player = engine.state.get_player(player_idx)
-            num_success_tasks_pp.append((num_success_pp[player], num_tasks_pp[player]))
+            for task in engine.state.assigned_tasks[player]:
+                task_idx_pos = engine.state.task_idxs.index(task.task_idx)
+                task_idxs_no_pt[task_idx_pos] = task.task_idx
+                task_success[task_idx_pos] = task.status == "success"
 
         ret.append(
             {
@@ -193,7 +192,9 @@ def do_batch_rollout(
                 "log_probs": log_probs_pt,
                 "actions": actions_pt,
                 "rewards": rewards_pt,
-                "num_success_tasks_pp": num_success_tasks_pp,
+                "task_idxs_no_pt": task_idxs_no_pt,
+                "task_success": task_success,
+                "difficulty": difficulty,
                 "win": win,
             }
         )
@@ -253,10 +254,13 @@ def do_batch_rollout_cpp(
         actor.start()
 
     cpp_timer = SimpleTimer() if record_cpp_time else nullcontext()
+    first = True
 
-    while not batch_rollout.is_done():
-        with cpp_timer:
-            move_inps = batch_rollout.get_move_inputs()
+    while True:
+        if first:
+            with cpp_timer:
+                move_inps = batch_rollout.get_move_inputs()
+            first = False
 
         # Purposefully create dummy entries for finished
         # samples so that the hidden state of the policy model is
@@ -302,7 +306,10 @@ def do_batch_rollout_cpp(
             )
 
         with cpp_timer:
-            batch_rollout.move(action_idxs, log_probs_pr)
+            move_inps = batch_rollout.move(action_idxs, log_probs_pr)
+
+        if move_inps.is_done:
+            break
 
     if actor:
         actor.stop()
@@ -331,7 +338,9 @@ def do_batch_rollout_cpp(
         orig_log_probs=results.log_probs,
         actions=results.actions,
         rewards=results.rewards,
-        frac_success=results.frac_success,
+        task_idxs_no_pt=results.task_idxs_no_pt,
+        task_success=results.task_success,
+        difficulty=results.difficulty,
         win=results.win,
         aux_info=results.aux_info,
     )

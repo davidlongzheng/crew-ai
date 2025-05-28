@@ -1,6 +1,7 @@
 import pytest
+from pydantic import ValidationError
 
-from ..types import Card
+from game.types import Card
 
 
 def test_card_creation() -> None:
@@ -15,9 +16,5 @@ def test_card_creation() -> None:
     assert str(trump_card) == "3t"
 
     # Invalid cards
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValidationError):
         Card(rank=0, suit=0)  # rank must be > 0
-
-    with pytest.raises(TypeError):
-        # Using type: ignore since we're intentionally testing type error
-        Card(rank="1", suit=0)  # type: ignore

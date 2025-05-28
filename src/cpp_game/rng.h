@@ -49,5 +49,12 @@ struct Rng
         return std::uniform_int_distribution<int>(min, max)(rng);
     }
 
+    int choice(const std::vector<int> &vec, const std::vector<double> &probs)
+    {
+        assert(vec.size() == probs.size());
+        std::discrete_distribution<int> dist(probs.begin(), probs.end());
+        return vec[dist(rng)];
+    }
+
     std::mt19937 rng;
 };

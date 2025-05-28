@@ -35,7 +35,9 @@ RolloutResults::RolloutResults(int num_rollouts, int seq_length, int max_hand_si
       log_probs({num_rollouts, seq_length, max_num_actions}),
       actions({num_rollouts, seq_length}),
       rewards({num_rollouts, seq_length}),
-      frac_success(num_rollouts),
+      task_idxs_no_pt({num_rollouts, max_num_tasks}),
+      task_success({num_rollouts, max_num_tasks}),
+      difficulty(num_rollouts),
       win(num_rollouts),
       aux_info({num_rollouts, num_cards})
 {
@@ -146,62 +148,57 @@ void Rollout::encode_aux_info()
     }
 }
 
-void Rollout::add_card(std::vector<int8_t> &vec, const Card &card)
+int Rollout::add_card(std::vector<int8_t> &vec, int i, const Card &card)
 {
-    vec.push_back(static_cast<int8_t>(card.rank - 1));
-    vec.push_back(static_cast<int8_t>(settings.get_suit_idx(card.suit)));
+    vec[i] = static_cast<int8_t>(card.rank - 1);
+    vec[i + 1] = static_cast<int8_t>(settings.get_suit_idx(card.suit));
+    return i + 2;
 }
 
-void Rollout::add_action(std::vector<int8_t> &vec, const Action &action)
+int Rollout::add_action(std::vector<int8_t> &vec, int i, const Action &action)
 {
     switch (action.type)
     {
     case ActionType::kSignal:
     case ActionType::kPlay:
-        add_card(vec, action.card.value());
+        add_card(vec, i, action.card.value());
         break;
     case ActionType::kNoSignal:
-        vec.push_back(max_suit_length);
-        vec.push_back(num_suits);
+        vec[i] = max_suit_length;
+        vec[i + 1] = num_suits;
         break;
     case ActionType::kDraft:
-        vec.push_back(action.task_idx.value());
-        vec.push_back(-1);
+        vec[i] = action.task_idx.value();
         break;
     case ActionType::kNoDraft:
-        vec.push_back(settings.num_task_defs);
-        vec.push_back(-1);
+        vec[i] = settings.num_task_defs;
         break;
     default:
         assert(false);
     }
+
+    return i + 2;
 }
 
 void Rollout::add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand)
 {
+    int N = vec.size();
+    vec.resize(N + max_hand_size * 2, -1);
+    int i = N;
     for (const auto &card : hand)
     {
-        add_card(vec, card);
-    }
-
-    for (int i = 0; i < max_hand_size - hand.size(); ++i)
-    {
-        vec.push_back(-1);
-        vec.push_back(-1);
+        i = add_card(vec, i, card);
     }
 }
 
 void Rollout::add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions)
 {
+    int N = vec.size();
+    vec.resize(N + max_num_actions * 2, -1);
+    int i = N;
     for (const auto &action : valid_actions)
     {
-        add_action(vec, action);
-    }
-
-    for (int i = 0; i < max_num_actions - valid_actions.size(); ++i)
-    {
-        vec.push_back(-1);
-        vec.push_back(-1);
+        i = add_action(vec, i, action);
     }
 }
 
@@ -245,7 +242,9 @@ void Rollout::move(int action_idx)
     // Record public history
     hist_player_idx_pt.push_back(engine->state.get_player_idx());
     hist_trick_pt.push_back(engine->state.trick);
-    add_action(hist_action_pt, action);
+    int N = hist_action_pt.size();
+    hist_action_pt.resize(N + 2, -1);
+    add_action(hist_action_pt, N, action);
     hist_turn_pt.push_back(engine->state.get_turn());
     hist_phase_pt.push_back(settings.get_phase_idx(engine->state.phase));
 
@@ -263,17 +262,37 @@ void Rollout::pop_last_history()
     hist_phase_pt.pop_back();
 }
 
-BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, bool multithread)
+BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, int num_threads)
     : settings(settings_), num_rollouts(num_rollouts_), seq_length(settings.seq_length), max_hand_size(settings.max_hand_size), max_num_actions(settings.max_num_actions), max_num_tasks(settings.resolved_max_num_tasks), move_inputs(num_rollouts, max_hand_size, max_num_actions, max_num_tasks), results(num_rollouts, seq_length, max_hand_size, max_num_actions, max_num_tasks, settings.num_cards)
 {
-    if (multithread)
-    {
-        pool = std::make_unique<ThreadPool>(std::thread::hardware_concurrency());
-    }
-
     for (int i = 0; i < num_rollouts; ++i)
     {
         rollouts.emplace_back(settings);
+    }
+
+    if (num_threads > 1)
+    {
+        std::vector<std::vector<std::function<void()>>> tasks(num_threads, std::vector<std::function<void()>>(2));
+        for (int i = 0; i < num_threads; ++i)
+        {
+            const int start = i * num_rollouts / num_threads;
+            const int end = i < num_threads - 1 ? (i + 1) * num_rollouts / num_threads : num_rollouts;
+            tasks[i][0] = [this, start, end]()
+            {
+                for (int j = start; j < end; ++j)
+                {
+                    rollouts[j].record_move_inputs();
+                }
+            };
+            tasks[i][1] = [this, start, end]()
+            {
+                for (int j = start; j < end; ++j)
+                {
+                    rollouts[j].move(action_idxs[j]);
+                }
+            };
+        }
+        pool = std::make_unique<FixedThreadPool>(tasks);
     }
 }
 
@@ -284,10 +303,25 @@ void BatchRollout::reset_state(const std::vector<int> &engine_seeds)
     {
         rollouts[i].reset_state(engine_seeds[i]);
     }
+    move_inputs.is_done = false;
 }
 
 const MoveInputs &BatchRollout::get_move_inputs()
 {
+    if (pool)
+    {
+        pool->run(0);
+    }
+    else
+    {
+        for (auto &rollout : rollouts)
+        {
+            // Update the rollout's arrays if game is not over
+            assert(rollout.engine->state.phase != Phase::kEnd);
+            rollout.record_move_inputs();
+        }
+    }
+
     auto *hist_player_idx_ptr = static_cast<int8_t *>(move_inputs.hist_player_idx.mutable_data());
     auto *hist_trick_ptr = static_cast<int8_t *>(move_inputs.hist_trick.mutable_data());
     auto *hist_action_ptr = static_cast<int8_t *>(move_inputs.hist_action.mutable_data());
@@ -303,31 +337,9 @@ const MoveInputs &BatchRollout::get_move_inputs()
 
     auto *valid_actions_ptr = static_cast<int8_t *>(move_inputs.valid_actions.mutable_data());
 
-    if (pool)
-    {
-        std::vector<std::function<void()>> tasks;
-        for (auto &rollout : rollouts)
-        {
-            tasks.push_back(
-                [&rollout]
-                {
-                    rollout.record_move_inputs();
-                });
-        }
-        parallel_exec(*pool, tasks);
-    }
-
     // Collect arrays from each rollout
     for (auto &rollout : rollouts)
     {
-        // Update the rollout's arrays if game is not over
-        assert(rollout.engine->state.phase != Phase::kEnd);
-
-        if (!pool)
-        {
-            rollout.record_move_inputs();
-        }
-
         *hist_player_idx_ptr = rollout.hist_player_idx_pt.back();
         hist_player_idx_ptr++;
         *hist_trick_ptr = rollout.hist_trick_pt.back();
@@ -360,40 +372,41 @@ const MoveInputs &BatchRollout::get_move_inputs()
     return move_inputs;
 }
 
-void BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs)
+const MoveInputs &BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs)
 {
-    auto action_indices_r = action_indices.unchecked<1>();
+    action_idxs.resize(action_indices.size());
+    std::copy(action_indices.data(), action_indices.data() + action_indices.size(), action_idxs.begin());
     if (pool)
     {
-        std::vector<std::function<void()>> tasks;
+        pool->run(1);
+    }
+    else
+    {
         for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
         {
-            int action_idx = action_indices_r(rollout_idx);
-            auto &rollout = rollouts[rollout_idx];
-            tasks.push_back(
-                [&, action_idx]
-                {
-                    rollout.move(action_idx);
-                });
+            int action_idx = action_idxs[rollout_idx];
+            rollouts[rollout_idx].move(action_idx);
         }
-        parallel_exec(*pool, tasks);
     }
 
     for (int rollout_idx = 0; rollout_idx < num_rollouts; ++rollout_idx)
     {
         auto &rollout = rollouts[rollout_idx];
-
-        if (!pool)
-        {
-            int action_idx = action_indices_r(rollout_idx);
-            rollout.move(action_idx);
-        }
-
-        // Create slice views of log_probs
         py::slice rollout_slice(rollout_idx, rollout_idx + 1, 1);
         py::array_t<float> log_probs_slice = log_probs[rollout_slice].cast<py::array_t<float>>();
         rollout.add_log_probs(log_probs_slice);
     }
+
+    if (is_done())
+    {
+        move_inputs.is_done = true;
+    }
+    else
+    {
+        get_move_inputs();
+    }
+
+    return move_inputs;
 }
 
 bool BatchRollout::is_done() const
@@ -432,7 +445,9 @@ const RolloutResults &BatchRollout::get_results()
     auto *log_probs_ptr = static_cast<float *>(results.log_probs.mutable_data());
     auto *actions_ptr = static_cast<long *>(results.actions.mutable_data());
     auto *rewards_ptr = static_cast<float *>(results.rewards.mutable_data());
-    auto *frac_success_ptr = static_cast<float *>(results.frac_success.mutable_data());
+    auto *task_idxs_no_pt_ptr = static_cast<int8_t *>(results.task_idxs_no_pt.mutable_data());
+    auto *task_success_ptr = static_cast<bool *>(results.task_success.mutable_data());
+    auto *difficulty_ptr = static_cast<int8_t *>(results.difficulty.mutable_data());
     auto *win_ptr = static_cast<bool *>(results.win.mutable_data());
     auto *aux_info_ptr = static_cast<int8_t *>(results.aux_info.mutable_data());
 
@@ -505,24 +520,33 @@ const RolloutResults &BatchRollout::get_results()
         *win_ptr = win;
         win_ptr++;
 
-        int8_t num_success = 0, num_tasks = 0;
-        for (int player_idx = 0; player_idx < settings.num_players; ++player_idx)
+        std::vector<int8_t> task_idxs_no_pt(max_num_tasks, -1);
+        std::vector<bool> task_success(max_num_tasks, false);
+        for (auto &player_tasks : rollout.engine->state.assigned_tasks)
         {
-            int player = rollout.engine->state.get_player(player_idx);
-            num_success += std::count_if(
-                rollout.engine->state.assigned_tasks[player].begin(),
-                rollout.engine->state.assigned_tasks[player].end(),
-                [](const auto &task)
-                { return task.status == Status::kSuccess; });
-            num_tasks += rollout.engine->state.assigned_tasks[player].size();
+            for (auto &task : player_tasks)
+            {
+                auto it = std::find(rollout.engine->state.task_idxs.begin(),
+                                    rollout.engine->state.task_idxs.end(),
+                                    task.task_idx);
+                assert(it != rollout.engine->state.task_idxs.end());
+                int task_idx_pos = it - rollout.engine->state.task_idxs.begin();
+                task_idxs_no_pt[task_idx_pos] = task.task_idx;
+                task_success[task_idx_pos] = task.status == Status::kSuccess;
+            }
         }
 
-        *frac_success_ptr = num_success / (float)num_tasks;
-        frac_success_ptr++;
+        std::copy(task_idxs_no_pt.begin(), task_idxs_no_pt.end(), task_idxs_no_pt_ptr);
+        task_idxs_no_pt_ptr += task_idxs_no_pt.size();
+
+        std::copy(task_success.begin(), task_success.end(), task_success_ptr);
+        task_success_ptr += task_success.size();
+
+        *difficulty_ptr = rollout.engine->state.difficulty;
+        difficulty_ptr++;
 
         std::copy(rollout.aux_info.begin(), rollout.aux_info.end(), aux_info_ptr);
         aux_info_ptr += rollout.aux_info.size();
     }
-
     return results;
 }

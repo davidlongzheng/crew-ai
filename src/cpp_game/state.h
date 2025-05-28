@@ -30,6 +30,7 @@ struct State
     std::vector<std::optional<Signal>> signals;
     std::optional<int> trick_winner;
     std::vector<int> task_idxs;
+    int difficulty;
     std::vector<int> unassigned_task_idxs;
     std::vector<std::vector<AssignedTask>> assigned_tasks;
     Status status;

@@ -601,11 +601,13 @@ struct AssignedTask : public Task
         else
         {
             std::vector<double> cond_values;
+            int i = 0;
             for (const auto &cond : conds)
             {
                 assert(0 <= cond->partial_value && cond->partial_value <= 1);
                 double partial_value = (cond->status == Status::kSuccess) ? 1.0 : cond->partial_value * 2.0 - 1.0;
                 cond_values.push_back(partial_value);
+                i++;
             }
 
             double avg_cond_value = 0.0;
@@ -943,7 +945,7 @@ inline const std::vector<std::tuple<std::string, std::string, int>> TASK_DEFS = 
     {"#1=0", "I will win no 1.", 2},
     {
         "#p=1 #g=1",
-        "I will win exactly 1p and 1g.",
+        "I will win exactly 1 pink and 1 green.",
         4,
     },
     {

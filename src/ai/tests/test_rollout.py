@@ -7,15 +7,15 @@ import torch
 from tensordict import TensorDict
 
 import cpp_game
-
-from ...game.settings import DEFAULT_PRESET, get_preset
-from ..featurizer import featurize
-from ..rollout import do_batch_rollout, do_batch_rollout_cpp
+from ai.featurizer import featurize
+from ai.rollout import do_batch_rollout, do_batch_rollout_cpp
+from game.settings import DEFAULT_PRESET, get_preset
 
 
 @pytest.mark.parametrize("use_drafting", [False, True])
 @pytest.mark.parametrize("signal_mode", ["no", "yes", "single", "cheating"])
-def test_batch_rollout_cpp(signal_mode, use_drafting):
+@pytest.mark.parametrize("use_difficulty_distro", [True, False])
+def test_batch_rollout_cpp(signal_mode, use_drafting, use_difficulty_distro):
     kwargs = {}
     if signal_mode == "no":
         kwargs = {"use_signals": False, "single_signal": False}
@@ -29,9 +29,14 @@ def test_batch_rollout_cpp(signal_mode, use_drafting):
     kwargs["use_drafting"] = use_drafting
 
     settings = get_preset(DEFAULT_PRESET)
+    if use_difficulty_distro:
+        num_difficulties = settings.max_difficulty - settings.min_difficulty + 1
+        probs = np.arange(num_difficulties)
+        probs = probs / probs.sum()
+        kwargs["difficulty_distro"] = probs.tolist()
     settings = replace(settings, **kwargs)
     cpp_settings = settings.to_cpp()
-    num_rollouts = 500
+    num_rollouts = 250
     batch_rollout = cpp_game.BatchRollout(cpp_settings, num_rollouts)
 
     for batch_seed in [42, 43]:
@@ -49,13 +54,17 @@ def test_batch_rollout_cpp(signal_mode, use_drafting):
             [x["log_probs"] for x in rollouts], dtype=torch.float32
         )
         rewards = torch.tensor([x["rewards"] for x in rollouts], dtype=torch.float32)
-        frac_success = torch.tensor(
-            [
-                np.sum([y[0] for y in x["num_success_tasks_pp"]])
-                / np.sum([y[1] for y in x["num_success_tasks_pp"]])
-                for x in rollouts
-            ],
-            dtype=torch.float32,
+        task_idxs_no_pt = torch.tensor(
+            [x["task_idxs_no_pt"] for x in rollouts],
+            dtype=torch.int8,
+        )
+        task_success = torch.tensor(
+            [x["task_success"] for x in rollouts],
+            dtype=torch.bool,
+        )
+        difficulty = torch.tensor(
+            [x["difficulty"] for x in rollouts],
+            dtype=torch.int8,
         )
         win = torch.tensor(
             [x["win"] for x in rollouts],
@@ -65,7 +74,9 @@ def test_batch_rollout_cpp(signal_mode, use_drafting):
             actions=actions,
             orig_log_probs=orig_log_probs,
             rewards=rewards,
-            frac_success=frac_success,
+            task_idxs_no_pt=task_idxs_no_pt,
+            task_success=task_success,
+            difficulty=difficulty,
             win=win,
         )
         td.auto_batch_size_()

@@ -6,13 +6,14 @@
 #include <set>
 #include <array>
 #include <stdexcept>
+#include <numeric>
 
 #include "types.h"
 
 // Game settings struct representing the configuration of a game
 struct Settings
 {
-    Settings(int num_players_, int num_side_suits_, bool use_trump_suit_, int side_suit_length_, int trump_suit_length_, bool use_signals_, bool cheating_signal_, bool single_signal_, std::string bank_, std::string task_distro_, std::vector<int> task_idxs_, std::optional<int> min_difficulty_, std::optional<int> max_difficulty_, std::optional<int> max_num_tasks_, bool use_drafting_, int num_draft_tricks_, double task_bonus_, double win_bonus_);
+    Settings(int num_players_, int num_side_suits_, bool use_trump_suit_, int side_suit_length_, int trump_suit_length_, bool use_signals_, bool cheating_signal_, bool single_signal_, std::string bank_, std::string task_distro_, std::vector<int> task_idxs_, std::optional<int> min_difficulty_, std::optional<int> max_difficulty_, std::optional<std::vector<double>> difficulty_distro_, std::optional<int> max_num_tasks_, bool use_drafting_, int num_draft_tricks_, double task_bonus_, double win_bonus_, bool weight_by_difficulty_);
 
     // Default values match Python implementation
     int num_players = 4;
@@ -34,6 +35,7 @@ struct Settings
     std::vector<int> task_idxs;
     std::optional<int> min_difficulty;
     std::optional<int> max_difficulty;
+    std::optional<std::vector<double>> difficulty_distro;
     std::optional<int> max_num_tasks;
 
     bool use_drafting = false;
@@ -50,6 +52,7 @@ struct Settings
     // completed tasks. The math is the same s.t. the final value is again
     // from [-1, 1]
     double win_bonus = 1.0;
+    bool weight_by_difficulty = true;
 
     // cache some common values.
     int num_tricks;
@@ -172,6 +175,22 @@ struct Settings
             return false;
         }
 
+        if (difficulty_distro.has_value())
+        {
+            if (!min_difficulty.has_value() || !max_difficulty.has_value())
+            {
+                return false;
+            }
+            if (max_difficulty.value() - min_difficulty.value() + 1 != difficulty_distro.value().size())
+            {
+                return false;
+            }
+            if (std::abs(std::accumulate(difficulty_distro.value().begin(), difficulty_distro.value().end(), 0.0) - 1.0) > 1e-6)
+            {
+                return false;
+            }
+        }
+
         if (use_drafting)
         {
             if (num_draft_tricks == 0)
@@ -181,7 +200,7 @@ struct Settings
         }
 
         if (has_min_difficulty && has_max_difficulty &&
-            min_difficulty.value() >= max_difficulty.value())
+            min_difficulty.value() > max_difficulty.value())
         {
             return false;
         }

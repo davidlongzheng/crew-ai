@@ -5,13 +5,12 @@ import click
 import torch
 
 import cpp_game
-from src.ai.actor import BatchActor, GreedyBatchActor, ModelBatchActor
-from src.ai.models import get_models
-from src.ai.rollout import do_batch_rollout_cpp
-from src.game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
-
-from ..game.tasks import Task, get_task_defs
-from ..game.utils import calc_trick_winner, split_by_suit, to_card, to_hand
+from ai.actor import BatchActor, ModelBatchActor
+from ai.models import get_models
+from ai.rollout import do_batch_rollout_cpp
+from game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
+from game.tasks import Task, get_task_defs
+from game.utils import calc_trick_winner, split_by_suit, to_action, to_hand
 
 
 def hand_to_str(hand, settings):
@@ -21,81 +20,70 @@ def hand_to_str(hand, settings):
     )
 
 
-def print_rollout(rollout, settings):
+def print_rollout(rollout, settings, skip_hands):
     seq_length = settings.get_seq_length()
 
     task_defs = get_task_defs(settings.bank)
 
-    task_idxs = rollout["inps", "task_idxs"]
+    task_idxs = rollout["inps", "private", "task_idxs"][-1]
     pidx_to_tasks = defaultdict(list)
     for task_idx, pidx in task_idxs:
-        task_def = task_defs[task_idx]
-        pidx_to_tasks[pidx].append(Task(*task_def, task_idx=task_idx))
+        task_def = task_defs[task_idx.item()]
+        pidx_to_tasks[pidx.item()].append(Task(*task_def, task_idx=task_idx))
 
     print("Tasks:")
-    for pidx, tasks in sorted(pidx_to_tasks.items()):
-        print(f"P{pidx}: {' '.join(map(str, tasks))}")
+    for pidx, tasks in sorted(pidx_to_tasks.items(), key=lambda x: x[0]):
+        print(f"P{pidx}: {' '.join(f'{x.task_idx}({x})' for x in tasks)}")
 
-    num_tricks_won = {pidx: 0 for pidx in range(settings.num_players)}
-
-    i = 0
-    while i < seq_length:
+    for i in range(0, seq_length, settings.num_players):
+        phase_idx = rollout["inps", "private", "phase"][i].item()
+        phase = settings.get_phase(phase_idx)
         trick = rollout["inps", "private", "trick"][i].item()
-        actions_in_trick = 1
-        while (
-            i + actions_in_trick < seq_length
-            and rollout["inps", "private", "trick"][i + actions_in_trick].item()
-            == trick
-        ):
-            actions_in_trick += 1
         leader = rollout["inps", "private", "player_idx"][i].item()
 
         print("-" * 50)
-        print(f"Trick: {trick}")
+        print(f"Phase: {phase} Trick: {trick}")
         print()
 
-        pidx_to_hand = {}
-        for j in range(settings.num_players):
-            hand = rollout["inps", "private", "hand"][i + j]
-            pidx = rollout["inps", "private", "player_idx"][i + j].item()
-            pidx_to_hand[pidx] = hand_to_str(hand, settings)
+        if not skip_hands:
+            pidx_to_hand = {}
+            for j in range(settings.num_players):
+                hand = rollout["inps", "private", "hand"][i + j]
+                pidx = rollout["inps", "private", "player_idx"][i + j].item()
+                pidx_to_hand[pidx] = hand_to_str(hand, settings)
 
-        for pidx, hand in sorted(pidx_to_hand.items()):
-            print(f"{'* ' if pidx == leader else ''}P{pidx}: {hand}")
-        print()
+            for pidx, hand in sorted(pidx_to_hand.items(), key=lambda x: x[0]):
+                print(f"{'* ' if pidx == leader else ''}P{pidx}: {hand}")
+            print()
 
         active_cards = []
         action_strs = []
-        prev_phase = -1
-        for j in range(actions_in_trick):
+        for j in range(settings.num_players):
             action_idx = rollout["actions"][i + j].item()
-            probs = torch.exp(rollout["orig_log_probs"][i + j])
-            valid_actions = rollout["inps", "valid_actions"][i + j]
-            action = valid_actions[action_idx]
-            probs = [(prob, a) for prob, a in zip(probs, valid_actions) if prob >= 0.1]
-            probs = sorted(probs, reverse=True)[:3]
-            prob_str = " ".join(
-                f"{to_card(a, settings)}={prob:.2f}" for prob, a in probs
-            )
-            phase = rollout["inps", "private", "phase"][i + j].item()
-            if phase != prev_phase:
-                prev_phase = phase
-                action_strs.append([])
+            probs = [x.item() for x in torch.exp(rollout["orig_log_probs"][i + j])]
             pidx = rollout["inps", "private", "player_idx"][i + j].item()
-            verb = "plays" if phase == 0 else "signals"
-            card = to_card(action, settings)
-            active_cards.append((card, pidx))
-            action_strs[-1].append(f"P{pidx} {verb} {card} ({prob_str}).")
-        print("\n".join(" ".join(x) for x in action_strs))
+
+            valid_actions = [x for x in rollout["inps", "valid_actions"][i + j]]
+            action = to_action(valid_actions[action_idx], phase_idx, pidx, settings)
+            probs_and_actions = [
+                (prob, a) for prob, a in zip(probs, valid_actions) if prob >= 0.1
+            ]
+            probs_and_actions = sorted(
+                probs_and_actions, reverse=True, key=lambda x: x[0]
+            )[:3]
+            prob_str = " ".join(
+                f"{to_action(a, phase_idx, pidx, settings).short_str()}={prob:.2f}"
+                for prob, a in probs_and_actions
+            )
+            if phase == "play":
+                active_cards.append((action.card, pidx))
+            action_strs.append(f"{action} ({prob_str})")
+        print(" ".join(action_strs))
         print()
 
-        trick_winner = calc_trick_winner(active_cards)
-        num_tricks_won[trick_winner] += 1
-
-        print(
-            f"Winner: P{trick_winner} Tricks won: {' '.join(f'P{pidx}={n}' for pidx, n in sorted(num_tricks_won.items()))}"
-        )
-        i += actions_in_trick
+        if phase == "play":
+            trick_winner = calc_trick_winner(active_cards)
+            print(f"Winner: P{trick_winner}")
 
     win = rollout["win"].item()
     print("-" * 50)
@@ -106,7 +94,7 @@ def print_rollout(rollout, settings):
 @click.option(
     "--outdir",
     type=Path,
-    help="Outdir. If unset, use greedy actor.",
+    help="Outdir. If unset, use random actions.",
 )
 @click.option(
     "--settings",
@@ -126,6 +114,12 @@ def print_rollout(rollout, settings):
     default=500,
 )
 @click.option(
+    "--num-success-examples",
+    type=int,
+    help="Num success examples",
+    default=0,
+)
+@click.option(
     "--num-failed-examples",
     type=int,
     help="Num failed examples",
@@ -137,13 +131,20 @@ def print_rollout(rollout, settings):
     help="Batch seed",
     default=42,
 )
+@click.option(
+    "--skip-hands",
+    is_flag=True,
+    help="Skip printing hands",
+)
 def main(
     outdir: Path | None,
     settings: Settings,
     use_cache: bool,
     num_rollouts: int,
+    num_success_examples: int,
     num_failed_examples: int,
     batch_seed: int,
+    skip_hands: bool,
 ) -> None:
     if outdir:
         state_dict = torch.load(outdir / "checkpoint.pth", weights_only=False)
@@ -153,9 +154,11 @@ def main(
         settings = settings_dict["settings"]
         pv_model = get_models(hp, settings)["pv"]
         pv_model.load_state_dict(state_dict["pv_model"])
-        actor: BatchActor = ModelBatchActor(pv_model)
+        actor: BatchActor | None = ModelBatchActor(pv_model)
+        argmax = True
     else:
-        actor = GreedyBatchActor(settings, num_rollouts=num_rollouts)
+        actor = None
+        argmax = False
 
     if use_cache:
         assert outdir is not None
@@ -164,22 +167,26 @@ def main(
         cpp_settings = settings.to_cpp()
         batch_rollout = cpp_game.BatchRollout(cpp_settings, num_rollouts)
         td = do_batch_rollout_cpp(
-            batch_rollout, batch_seed=batch_seed, actor=actor, argmax=True
+            batch_rollout, batch_seed=batch_seed, actor=actor, argmax=argmax
         )
 
     N = len(td)
     win_rate = td["win"].float().mean()
     mean_reward = td["rewards"].sum(dim=-1).mean()
-    frac_success = td["frac_success"].mean()
+    frac_success = td["task_success"].float().mean(dim=1).mean()
     print(
         f"num_rollouts: {N}, win_rate: {win_rate:.3f}, mean_reward: {mean_reward:.3f}, frac_success: {frac_success:.3f}"
     )
 
-    failed_examples = td[td["win"] == 0][:num_failed_examples]
-    for i, rollout in enumerate(failed_examples):
-        print("=" * 50)
-        print(f"Failed example {i}:")
-        print_rollout(rollout, settings)
+    for status in ["success", "fail"]:
+        num_examples = (
+            num_success_examples if status == "success" else num_failed_examples
+        )
+        examples = td[td["win"] == (1 if status == "success" else 0)][:num_examples]
+        for i, rollout in enumerate(examples):
+            print("=" * 50)
+            print(f"{'Success' if status == 'success' else 'Failed'} example {i}:")
+            print_rollout(rollout, settings, skip_hands)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from src.game.tasks import get_task_defs
-from src.game.utils import calc_trick_winner, to_hand
+from game.tasks import get_task_defs
+from game.utils import calc_trick_winner, to_hand
 
 
 class BatchActor:

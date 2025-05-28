@@ -10,9 +10,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.ai.rollout import do_batch_rollout
-
-from ..game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
+from ai.rollout import do_batch_rollout
+from game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
 
 CANON_WIN_CACHE_DIR = Path(__file__).parent.parent.parent / "win_cache"
 

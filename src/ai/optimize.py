@@ -12,7 +12,7 @@ from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler  # bayesian sampler
 from optuna.trial import TrialState
 
-from src.ai.hyperparams import Hyperparams
+from ai.hyperparams import Hyperparams
 
 EVAL_REGEX = re.compile(r"Round (\d+):.*win_rate=([-\d\.]+)")
 MODEL_SIZE_REGEX = re.compile(r"Num Parameters: pv=([\d\.e\+]+)")
@@ -88,6 +88,7 @@ def objective(trial: optuna.Trial, outdir: Path, num_rounds: int | None) -> floa
         str(run_dir),
         "--hp",
         hp_str,
+        "--skip-td",
     ]
 
     try:

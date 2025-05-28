@@ -1,10 +1,11 @@
 from __future__ import absolute_import, annotations
 
-from dataclasses import dataclass
 from typing import Literal
 
-from .tasks import AssignedTask
-from .types import Action, Card, Phase, Signal
+from pydantic.dataclasses import dataclass
+
+from game.tasks import AssignedTask
+from game.types import Action, Card, Event, Phase, Signal
 
 
 @dataclass
@@ -21,7 +22,9 @@ class State:
     past_tricks: list[tuple[list[Card], int]]
     signals: list[Signal | None]
     trick_winner: int | None
+    history: list[Event]
     task_idxs: list[int]
+    difficulty: int
     unassigned_task_idxs: list[int]
     assigned_tasks: list[list[AssignedTask]]
     status: Literal["success", "fail", "unresolved"]

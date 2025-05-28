@@ -11,25 +11,29 @@ from typing import Any, cast
 
 import click
 import numpy as np
+import pandas as pd
 import torch
 from ipdb import launch_ipdb_on_exception
 from loguru import logger
 from tensordict import TensorDict
 from torch import GradScaler, nn
+from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 import cpp_game
-
-from ..game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
-from .actor import ModelBatchActor
-from .hyperparams import HP_TYPE, Hyperparams
-from .models import PolicyValueModel, get_models
-from .rollout import do_batch_rollout_cpp
-from .summary_writer import CustomSummaryWriter
-from .win_cache import CANON_WIN_CACHE_DIR, load_cache
+from ai.actor import ModelBatchActor
+from ai.curriculum import Curriculum, get_curriculum
+from ai.hyperparams import HP_TYPE, Hyperparams
+from ai.models import PolicyValueModel, get_models
+from ai.rollout import do_batch_rollout_cpp
+from ai.summary_writer import CustomSummaryWriter
+from ai.utils import win_rate_by_difficulty
+from ai.win_cache import CANON_WIN_CACHE_DIR, load_cache
+from game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
+from game.utils import get_splits_and_phases
 
 
 def print_memory_usage(key):
@@ -182,23 +186,8 @@ def compute_advantage(
 
 
 @cache
-def get_mse_loss():
-    return nn.MSELoss()
-
-
-@cache
-def get_huber_loss():
-    return nn.HuberLoss()
-
-
-@cache
 def get_cross_entropy_loss():
     return nn.CrossEntropyLoss()
-
-
-@cache
-def get_smooth_l1_loss(beta):
-    return nn.SmoothL1Loss(beta=beta)
 
 
 def compute_aux_info_loss(td):
@@ -222,10 +211,9 @@ def compute_loss(
     ppo_clip_ratio,
     ppo_coef,
     entropy_coef,
-    value_loss_method,
-    value_smooth_l1_beta,
     value_coef,
     aux_info_coef,
+    phase_weights,
 ):
     # (N, T)
     actions = td["actions"]
@@ -251,6 +239,11 @@ def compute_loss(
     # (N*T)
     mask = mask.reshape((-1,))
 
+    def weight_by_phase(x):
+        if phase_weights is None:
+            return x
+        return phase_weights * x
+
     def masked_mean(x):
         # (N*T)
         x = x.reshape((-1,))
@@ -265,7 +258,7 @@ def compute_loss(
 
     raw = (action_log_probs - orig_action_log_probs).exp() * advantages
     ceil = g(advantages)
-    ppo_loss = masked_mean(-torch.minimum(raw, ceil))
+    ppo_loss = masked_mean(weight_by_phase(-torch.minimum(raw, ceil)))
     frac_clipped = masked_mean((raw > ceil).float())
     eps = 1e-8
     log_eps = np.log(eps)
@@ -273,7 +266,9 @@ def compute_loss(
     clamped_orig_probs = torch.exp(orig_log_probs).clamp(min=eps)
     clamped_log_probs = log_probs.clamp(min=log_eps)
     clamped_orig_log_probs = orig_log_probs.clamp(min=log_eps)
-    entropy_loss = masked_mean(torch.sum(clamped_probs * clamped_log_probs, dim=-1))
+    entropy_loss = masked_mean(
+        weight_by_phase(torch.sum(clamped_probs * clamped_log_probs, dim=-1))
+    )
     kl_loss = masked_mean(
         torch.sum(
             clamped_orig_probs * (clamped_orig_log_probs - clamped_log_probs),
@@ -281,19 +276,17 @@ def compute_loss(
         )
     )
 
-    def get_value_loss(x, y):
-        if value_loss_method == "mse":
-            return get_mse_loss()(x, y)
-        elif value_loss_method == "huber":
-            return get_huber_loss()(x, y)
-        elif value_loss_method == "smoothl1":
-            return get_smooth_l1_loss(value_smooth_l1_beta)(x, y)
-        else:
-            raise ValueError(value_loss_method)
-
     values = td["values"]
     value_targets = td["value_targets"]
-    value_loss = get_value_loss(values, value_targets)
+    value_loss = F.mse_loss(
+        values,
+        value_targets,
+        weight=(
+            phase_weights.unsqueeze(0).expand(values.shape)
+            if phase_weights is not None
+            else None
+        ),
+    )
 
     combined_loss = (
         ppo_coef * ppo_loss + entropy_coef * entropy_loss + value_coef * value_loss
@@ -344,6 +337,26 @@ def compute_grad_norms(losses, pv_model):
     return ret
 
 
+def get_phase_weights(settings, hp, device):
+    splits, phases = get_splits_and_phases(settings, as_phase_index=False)
+    phases_t = [[phase] * split for split, phase in zip(splits, phases)]
+    phases_t = [x for y in phases_t for x in y]
+    assert len(phases_t) == settings.get_seq_length()
+    weight_dict = {
+        "play": 1.0,
+        "signal": hp.signal_weight,
+        "draft": hp.draft_weight,
+    }
+    weights_t = [weight_dict[x] for x in phases_t]
+    if all(x == 1.0 for x in weights_t):
+        return None
+
+    weights = torch.tensor(weights_t, device=device)
+    weights /= weights.mean()
+
+    return weights
+
+
 def train_one_epoch(
     round,
     epoch,
@@ -355,6 +368,7 @@ def train_one_epoch(
     outdir,
     scaler,
     gc,
+    phase_weights,
 ):
     running_losses = Counter()
     running_grad_norms = Counter()
@@ -404,10 +418,9 @@ def train_one_epoch(
                         hp.policy_ppo_clip_ratio,
                         hp.policy_ppo_coef,
                         hp.policy_entropy_coef,
-                        hp.value_loss_method,
-                        hp.value_smooth_l1_beta,
                         hp.value_coef,
                         hp.aux_info_coef,
+                        phase_weights,
                     )
 
             if mode == "train":
@@ -478,6 +491,7 @@ def train_one_round(
     log_epoch,
     outdir,
     scaler,
+    phase_weights,
 ):
     train_data_loader = DataLoader(
         td[: hp.num_train_rollouts_per_round],
@@ -522,6 +536,7 @@ def train_one_round(
                 outdir=outdir,
                 scaler=scaler,
                 gc=gc,
+                phase_weights=phase_weights,
             )
             if mode == "train":
                 gc["num_steps"] += num_steps_in_epoch
@@ -546,13 +561,14 @@ def train_one_round(
                     )
 
             if mode == "train":
-                gc["num_rollouts"] += hp.num_train_rollouts_per_round
+                gc["num_rollout_passes"] += hp.num_train_rollouts_per_round
                 writer.add_scalar(
                     "counter/round",
                     round,
                     gc["num_epochs"],
                 )
                 for k in [
+                    "num_rollout_passes",
                     "num_rollouts",
                     "num_steps",
                     "num_early_stops",
@@ -588,6 +604,42 @@ def train_one_round(
         (outdir / "_keep").touch()
 
     lr_sched.step()
+    gc["num_rollouts"] += hp.num_train_rollouts_per_round
+
+
+def save_task_info(
+    td: TensorDict,
+    round: int,
+    outdir: Path,
+):
+    (outdir / "task_infos").mkdir(exist_ok=True)
+    # compute num samples and success rate per task_idx + game difficulty.
+    # compute num samples and win rate per game difficulty.
+
+    df = pd.DataFrame(
+        {
+            "task_idx": td["task_idxs_no_pt"].cpu().numpy().tolist(),
+            "task_success": td["task_success"].cpu().numpy().tolist(),
+            "game_win": td["win"].cpu().numpy(),
+            "game_difficulty": td["difficulty"].cpu().numpy(),
+        }
+    )
+    df["round"] = round
+    df["count"] = 1
+
+    task_df = df.explode(["task_idx", "task_success"])
+    task_df = task_df.query("task_idx != -1")
+    task_df = task_df.groupby(["round", "task_idx", "game_difficulty"])[
+        ["task_success", "count"]
+    ].sum()
+
+    game_df = df.groupby(["round", "game_difficulty"])[["game_win", "count"]].sum()
+    ret = {
+        "task": task_df,
+        "game": game_df,
+    }
+    out_fn = outdir / "task_infos" / f"task_info_{round}.pkl"
+    pd.to_pickle(ret, str(out_fn))
 
 
 def train(
@@ -604,31 +656,47 @@ def train(
     gc: Counter,
     engine_seeds: list[int] | None,
     rng_state,
+    num_threads: int,
+    skip_td: bool,
+    save_task_info_freq: int,
+    curriculum: Curriculum | None,
+    curriculum_state: dict,
+    last_win_rate: float,
 ) -> None:
     timer = Timer(writer)
+
+    if curriculum:
+        settings = cast(
+            Settings, curriculum.update_settings(curriculum_state, settings)
+        )
+        logger.info(f"New settings: {settings}")
+
     cpp_settings = settings.to_cpp()
     batch_rollout = cpp_game.BatchRollout(
         cpp_settings,
         hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
+        num_threads=num_threads,
     )
     actor = ModelBatchActor(pv_model)
+    phase_weights = get_phase_weights(settings, hp, device)
 
     if rng_state is not None:
         torch.set_rng_state(rng_state[0])
         torch.cuda.set_rng_state_all(rng_state[1])
 
-    last_win_rate = 0.0
     round = start_round
     while round < hp.num_rounds:
         torch.save(
             {
                 "round": round,
+                "curriculum_state": curriculum_state,
                 "pv_model": pv_model.state_dict(),
                 "optim": optim.state_dict(),
                 "lr_sched": lr_sched.state_dict(),
                 "gc": gc,
                 "scaler": (scaler.state_dict() if scaler else None),
                 "rng_state": (torch.get_rng_state(), torch.cuda.get_rng_state_all()),
+                "last_win_rate": last_win_rate,
             },
             outdir / "checkpoint_unverified.pth",
         )
@@ -666,14 +734,38 @@ def train(
             continue
 
         (outdir / "checkpoint_unverified.pth").replace(outdir / "checkpoint.pth")
-        torch.save(td, outdir / "td.pth")
+
+        if curriculum and (
+            new_settings := curriculum.update_settings(curriculum_state, settings, td)
+        ):
+            settings = new_settings
+            logger.info(f"New settings: {settings}")
+            cpp_settings = settings.to_cpp()
+            batch_rollout = cpp_game.BatchRollout(
+                cpp_settings,
+                hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
+                num_threads=num_threads,
+            )
+            last_win_rate = 0.0
+            continue
+
+        if save_task_info_freq and round % save_task_info_freq == 0:
+            save_task_info(td, round, outdir)
+
+        if not skip_td:
+            torch.save(td, outdir / "td.pth")
 
         mean_reward = td["rewards"].sum(dim=-1).mean()
         writer.add_scalar("rewards/reward_mean", mean_reward, round)
-        mean_frac_success = td["frac_success"].mean()
+        mean_frac_success = td["task_success"].float().mean(dim=1).mean()
         assert mean_frac_success <= 1.0
         writer.add_scalar("rewards/frac_success_mean", mean_frac_success, round)
         writer.add_scalar("rewards/win_rate", win_rate, round)
+        writer.add_scalar("rewards/win_rate_vs_rollouts", win_rate, gc["num_rollouts"])
+
+        win_rates = win_rate_by_difficulty(td)
+        for diff, _win_rate in win_rates.items():
+            writer.add_scalar(f"win_rate_by_diff/win_rate_{diff}", _win_rate, round)
 
         writer.add_hparams(
             hparam_dict={
@@ -712,6 +804,7 @@ def train(
             log_epoch=(hp.num_rounds <= 5),
             outdir=outdir,
             scaler=scaler,
+            phase_weights=phase_weights,
         )
         timer.finish("training", round)
 
@@ -747,6 +840,10 @@ def train(
     default=get_preset(DEFAULT_PRESET),
     help="Settings",
 )
+@click.option(
+    "--curriculum-mode",
+    help="Curriculum mode",
+)
 @click.option("--device", type=torch.device, default=get_device(), help="Device")
 @click.option(
     "--seed",
@@ -763,11 +860,6 @@ def train(
     "--resume",
     is_flag=True,
     help="Must set --resume to run on existing outdir.",
-)
-@click.option(
-    "--autoindex-runs",
-    is_flag=True,
-    help="Auto-index new runs.",
 )
 @click.option(
     "--copy-dir",
@@ -788,24 +880,41 @@ def train(
     is_flag=True,
     help="Don't catch errors",
 )
+@click.option(
+    "--num-threads",
+    type=int,
+    default=1,
+    help="Number of rollout threads",
+)
+@click.option(
+    "--skip-td",
+    is_flag=True,
+    help="Skip save td.",
+)
+@click.option(
+    "--save-task-info-freq", type=int, default=10, help="Save task info every n rounds."
+)
 def main(
     outdir: Path,
     hp: Hyperparams,
     settings: Settings,
+    curriculum_mode: str | None,
     device: torch.device,
     seed: int,
     clean: bool,
     resume: bool,
-    autoindex_runs: bool,
     copy_dir: Path | None,
     win_thresh: float | None,
     win_cache_dir: Path,
     no_error_catch: bool,
+    num_threads: int,
+    skip_td: bool,
+    save_task_info_freq: int,
 ) -> None:
     outdir = outdir.resolve()
-    assert (not autoindex_runs) == (
+    autoindex_runs = not (
         outdir.name.startswith("run_") or outdir.name.startswith("seed_")
-    ), "We expect outdir to be named with run_* or seed_* unless autoindex_runs=True"
+    )
 
     if autoindex_runs:
         max_run_idx = max(
@@ -843,6 +952,11 @@ def main(
     try:
         logger.info("** Training Configuration **")
         logger.info(f"Settings: {settings}")
+        if curriculum_mode is not None:
+            curriculum = get_curriculum(curriculum_mode)
+            logger.info(f"Curriculum: {curriculum_mode}")
+        else:
+            curriculum = None
         logger.info(f"Hyperparams: {hp}")
         logger.info(f"Output Directory: {outdir}")
         logger.info(f"Device: {device}")
@@ -892,6 +1006,7 @@ def main(
             {
                 "outdir": outdir,
                 "settings": settings,
+                "curriculum": curriculum,
                 "hp": hp,
                 "seed": seed,
                 "device": device,
@@ -916,6 +1031,12 @@ def main(
                     orig_state_dict.get("gc", Counter()),
                     engine_seeds,
                     orig_state_dict.get("rng_state", None),
+                    num_threads,
+                    skip_td,
+                    save_task_info_freq,
+                    curriculum,
+                    orig_state_dict.get("curriculum_state", {}),
+                    orig_state_dict.get("last_win_rate", 0.0),
                 )
     finally:
         (outdir / "_running").unlink()

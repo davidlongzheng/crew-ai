@@ -44,6 +44,7 @@ set(HEADERS
     src/cpp_game/utils.h
     src/cpp_game/rollout.h
     src/cpp_game/thread_pool.h
+    src/cpp_game/lockfree_pool.h
 )
 
 # Add the C++ library called "game"

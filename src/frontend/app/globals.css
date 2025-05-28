@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes twinkle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.animate-twinkle {
+  animation: twinkle 2s infinite;
+}
+
+.pixel-text-shadow {
+  text-shadow: 4px 4px 0px rgba(0, 0, 0, 0.5);
+}
+
+.pixel-button-shadow {
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.5);
+}
+
+/* Pixelated border effect */
+.pixel-border {
+  image-rendering: pixelated;
+  border-style: solid;
+  border-width: 4px;
+  border-image-slice: 2;
+  border-image-width: 2;
+  border-image-outset: 0;
+  border-image-source: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABISURBVChTY2RgYPjPQABwMDAwMDIyMjAyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMgAAXq4DAb8hq3QAAAAASUVORK5CYII=");
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}

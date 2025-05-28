@@ -1,54 +1,23 @@
 from functools import cached_property
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
-from ..game.settings import Settings
-from .hyperparams import Hyperparams
-from .utils import MLP
-
-AGG_METHODS = ["maxpool", "sumpool", "avgpool"]
+from ai.hyperparams import Hyperparams
+from ai.utils import MLP
+from game.settings import Settings
 
 
-def aggregate(x, mask, *, method, dim, check_finite=True):
-    assert method in AGG_METHODS, method
-
+def maxpool(x, mask, *, dim, check_finite=True):
     x = x.masked_fill(
         mask,
-        -float("inf") if method == "maxpool" else float("nan"),
+        -float("inf"),
     )
-
-    if method == "maxpool":
-        out = torch.max(x, dim=dim)[0]
-    elif method == "sumpool":
-        out = torch.nansum(x, dim=dim)
-    elif method == "avgpool":
-        num_notna = (~x.isnan()).sum(dim=dim)
-        out = torch.where(
-            num_notna > 0,
-            torch.nansum(x, dim=dim) / num_notna.clamp(min=1),
-            float("nan"),
-        )
-    else:
-        raise ValueError(method)
-
+    out = torch.max(x, dim=dim)[0]
     if check_finite:
         assert out.isfinite().all()
 
     return out
-
-
-def get_pos_embed(num_pos, output_dim):
-    pos_idx = torch.arange(num_pos, dtype=torch.float)
-    assert output_dim % 2 == 0
-    channel_idx = torch.arange(output_dim // 2, dtype=torch.float)
-    freq = 1.0 / (0.5 * num_pos ** (channel_idx / (output_dim // 2)))
-
-    arg = torch.einsum("p,c->pc", pos_idx, freq)
-    cos = torch.cos(arg)
-    sin = torch.sin(arg)
-    return torch.stack([cos, sin], dim=-1).reshape(num_pos, output_dim)
 
 
 class PaddedEmbed(nn.Module):
@@ -57,21 +26,12 @@ class PaddedEmbed(nn.Module):
         num_embeddings: int,
         output_dim: int,
         dropout: float,
-        embed_type: str,
     ):
         super().__init__()
-        self.embed_type = embed_type
         self.num_embeddings = num_embeddings
-        if self.embed_type == "embed":
-            self.embed: nn.Module = nn.Embedding(
-                num_embeddings + 1, output_dim, padding_idx=0
-            )
-        elif self.embed_type in ["one_hot"]:
-            self.embed = nn.Linear(num_embeddings + 1, output_dim)
-        elif self.embed_type == "pos":
-            self.register_buffer("embed", get_pos_embed(num_embeddings + 1, output_dim))
-        else:
-            raise ValueError(self.embed_type)
+        self.embed: nn.Module = nn.Embedding(
+            num_embeddings + 1, output_dim, padding_idx=0
+        )
 
         self.output_dim = output_dim
         self.dropout = None
@@ -79,18 +39,9 @@ class PaddedEmbed(nn.Module):
             self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        if self.embed_type == "embed":
-            assert (x >= -1).all()
-            assert (x < self.num_embeddings).all()
-            x = self.embed((x + 1).to(torch.int32))
-        elif self.embed_type == "one_hot":
-            x = self.embed(
-                F.one_hot((x + 1).long(), num_classes=self.num_embeddings + 1).float()
-            )
-        elif self.embed_type == "pos":
-            x = self.embed[(x + 1).to(torch.int32)]
-        else:
-            raise ValueError(self.embed_type)
+        assert (x >= -1).all()
+        assert (x < self.num_embeddings).all()
+        x = self.embed((x + 1).to(torch.int32))
 
         if self.dropout:
             x = self.dropout(x)
@@ -104,24 +55,15 @@ class CardModel(nn.Module):
         settings: Settings,
         output_dim: int,
         dropout: float,
-        use_pos: bool,
-        use_sep_trump_rank: bool,
     ):
         super().__init__()
 
-        # If use_sep_trump_rank, let's make sure that the trump ranks
-        # come after the side suit ranks and the nosignal rank.
-        self.use_sep_trump_rank = use_sep_trump_rank and settings.use_trump_suit
-        if self.use_sep_trump_rank:
-            self.trump_suit = settings.num_side_suits
-            self.trump_suit_delta = settings.side_suit_length + settings.use_nosignal
+        self.trump_suit = settings.num_side_suits
+        self.trump_suit_delta = settings.side_suit_length + settings.use_nosignal
 
         num_ranks = settings.side_suit_length
         if settings.use_trump_suit:
-            if use_sep_trump_rank:
-                num_ranks += settings.trump_suit_length
-            else:
-                num_ranks = max(settings.side_suit_length, settings.trump_suit_length)
+            num_ranks += settings.trump_suit_length
         num_ranks += settings.use_nosignal  # to handle nosignal
 
         # +1 to handle nosignal
@@ -131,11 +73,8 @@ class CardModel(nn.Module):
             num_ranks,
             output_dim,
             dropout,
-            embed_type="pos" if use_pos else "embed",
         )
-        self.suit_embed = PaddedEmbed(
-            num_suits, output_dim, dropout, embed_type="embed"
-        )
+        self.suit_embed = PaddedEmbed(num_suits, output_dim, dropout)
         self.output_dim = output_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -143,19 +82,14 @@ class CardModel(nn.Module):
         rank = x[..., 0]
         suit = x[..., 1]
 
-        if self.use_sep_trump_rank:
-            rank = torch.where(
-                suit == self.trump_suit, rank + self.trump_suit_delta, rank
-            )
+        rank = torch.where(suit == self.trump_suit, rank + self.trump_suit_delta, rank)
 
         x = self.rank_embed(rank) + self.suit_embed(suit)
         return x
 
 
 class TrickModel(nn.Module):
-    def __init__(
-        self, embed_dim: int, embed_dropout: float, embed_type: str, settings: Settings
-    ):
+    def __init__(self, embed_dim: int, embed_dropout: float, settings: Settings):
         super().__init__()
         self.use_drafting = settings.use_drafting
         if self.use_drafting:
@@ -165,7 +99,7 @@ class TrickModel(nn.Module):
         else:
             num_embeddings = settings.num_tricks
 
-        self.embed = PaddedEmbed(num_embeddings, embed_dim, embed_dropout, embed_type)
+        self.embed = PaddedEmbed(num_embeddings, embed_dim, embed_dropout)
 
     def forward(self, trick, phase):
         if self.use_drafting:
@@ -183,15 +117,13 @@ class HandModel(nn.Module):
         card_model: CardModel,
         hidden_dim: int,
         num_hidden_layers: int,
-        use_layer_norm: bool,
         dropout: float,
-        agg_method: str,
     ):
         super().__init__()
         self.card_model = card_model
         self.output_dim = output_dim
         input_dim = self.card_model.output_dim
-        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
+        self.layer_norm = nn.LayerNorm(input_dim)
         self.mlp = MLP(
             input_dim,
             hidden_dim,
@@ -199,8 +131,6 @@ class HandModel(nn.Module):
             num_hidden_layers,
             dropout=dropout,
         )
-        assert agg_method in AGG_METHODS, agg_method
-        self.agg_method = agg_method
 
     @cached_property
     def hand_params(self):
@@ -209,12 +139,9 @@ class HandModel(nn.Module):
     def forward(self, x, check_finite=True):
         mask = (x[..., 0] == -1).unsqueeze(-1)
         x = self.card_model(x)
-        if self.layer_norm:
-            x = self.layer_norm(x)
+        x = self.layer_norm(x)
         x = self.mlp(x)
-        x = aggregate(
-            x, mask, method=self.agg_method, dim=-2, check_finite=check_finite
-        )
+        x = maxpool(x, mask, dim=-2, check_finite=check_finite)
         return x
 
 
@@ -226,16 +153,14 @@ class TasksModel(nn.Module):
         player_model: PaddedEmbed,
         hidden_dim: int,
         num_hidden_layers: int,
-        use_layer_norm: bool,
         dropout: float,
-        agg_method: str,
     ):
         super().__init__()
         self.task_model = task_model
         self.player_model = player_model
         self.output_dim = output_dim
         input_dim = self.task_model.output_dim + self.player_model.output_dim
-        self.layer_norm = nn.LayerNorm(input_dim) if use_layer_norm else None
+        self.layer_norm = nn.LayerNorm(input_dim)
         self.mlp = MLP(
             input_dim,
             hidden_dim,
@@ -243,8 +168,6 @@ class TasksModel(nn.Module):
             num_hidden_layers,
             dropout=dropout,
         )
-        assert agg_method in AGG_METHODS, agg_method
-        self.agg_method = agg_method
 
     @cached_property
     def tasks_params(self):
@@ -262,12 +185,9 @@ class TasksModel(nn.Module):
             ],
             dim=-1,
         )
-        if self.layer_norm:
-            x = self.layer_norm(x)
+        x = self.layer_norm(x)
         x = self.mlp(x)
-        x = aggregate(
-            x, mask, method=self.agg_method, dim=-2, check_finite=check_finite
-        )
+        x = maxpool(x, mask, dim=-2, check_finite=check_finite)
         return x
 
 
@@ -313,30 +233,24 @@ def get_embed_models(
         settings.num_players + (1 if settings.use_drafting else 0),
         hp.embed_dim,
         hp.embed_dropout,
-        embed_type="embed",
     )
     card_model = CardModel(
         settings,
         hp.embed_dim,
         hp.embed_dropout,
-        hp.embed_use_pos,
-        hp.embed_sep_trump_rank,
     )
     hand_model = HandModel(
         hp.hand_embed_dim,
         card_model,
         hidden_dim=hp.hand_hidden_dim,
         num_hidden_layers=hp.hand_num_hidden_layers,
-        use_layer_norm=hp.hand_use_layer_norm,
         dropout=hp.hand_dropout,
-        agg_method=hp.hand_agg_method,
     )
     # +1 b/c we need to encode the nodraft action.
     task_model = PaddedEmbed(
         settings.num_task_defs + (1 if settings.use_drafting else 0),
         hp.embed_dim,
         hp.embed_dropout,
-        embed_type="embed",
     )
     tasks_model = TasksModel(
         hp.tasks_embed_dim,
@@ -344,9 +258,7 @@ def get_embed_models(
         player_model,
         hp.tasks_hidden_dim,
         hp.tasks_num_hidden_layers,
-        hp.tasks_use_layer_norm,
         hp.tasks_dropout,
-        hp.tasks_agg_method,
     )
     action_model: nn.Module = ActionModel(
         card_model,
@@ -359,14 +271,12 @@ def get_embed_models(
         "trick": TrickModel(
             hp.embed_dim,
             hp.embed_dropout,
-            embed_type=("pos" if hp.embed_use_pos else "embed"),
             settings=settings,
         ),
         "turn": PaddedEmbed(
             settings.num_players,
             hp.embed_dim,
             hp.embed_dropout,
-            embed_type=("pos" if hp.embed_use_pos else "embed"),
         ),
         "card": card_model,
         "action": action_model,
@@ -376,7 +286,6 @@ def get_embed_models(
             settings.num_phases,
             hp.embed_dim,
             hp.embed_dropout,
-            embed_type="embed",
         ),
         "hand": hand_model,
     }

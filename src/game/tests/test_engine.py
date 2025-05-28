@@ -5,10 +5,9 @@ import random
 import pytest
 
 import cpp_game
-
-from ..engine import Engine
-from ..settings import Settings
-from ..types import Action, Card
+from game.engine import Engine
+from game.settings import Settings
+from game.types import Action, Card
 
 
 def test_engine_initialization() -> None:

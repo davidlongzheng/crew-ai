@@ -2,9 +2,9 @@ from typing import cast
 
 import torch
 
-from .settings import Settings
-from .state import State
-from .types import Action, Card
+from game.settings import Settings
+from game.state import State
+from game.types import Action, Card
 
 
 def split_by_suit(hand: list[Card]) -> list[list[Card]]:
@@ -25,6 +25,24 @@ def to_card(arr: torch.Tensor, settings) -> Card:
     rank = int(arr[0].item()) + 1
     suit = settings.get_suit(int(arr[1].item()))
     return Card(rank, suit)
+
+
+def to_action(arr: torch.Tensor, phase_idx: int, player: int, settings) -> Action:
+    phase = settings.get_phase(phase_idx)
+    if phase == "draft":
+        if arr[0].item() == settings.num_task_defs:
+            return Action(player, "nodraft")
+        else:
+            return Action(player, "draft", task_idx=int(arr[0].item()))
+    elif phase == "signal":
+        if arr[0].item() == settings.max_suit_length:
+            return Action(player, "nosignal")
+        else:
+            return Action(player, "signal", card=to_card(arr, settings))
+    elif phase == "play":
+        return Action(player, "play", card=to_card(arr, settings))
+    else:
+        raise ValueError(phase)
 
 
 def to_hand(arr: torch.Tensor, settings) -> list[Card]:
@@ -71,3 +89,35 @@ def calc_trick_winner(active_cards: list[tuple[Card, int]]) -> int:
         key=lambda x: (x[0].is_trump, x[0].suit == lead_suit, x[0].rank),
     )
     return winner
+
+
+def get_splits_and_phases(settings, as_phase_index=True):
+    if settings.use_drafting:
+        splits = [settings.num_players * settings.num_draft_tricks]
+        phases = ["draft"]
+    else:
+        splits = []
+        phases = []
+
+    if settings.use_signals:
+        if settings.single_signal:
+            splits += [
+                settings.num_players,
+                settings.num_players * settings.num_tricks,
+            ]
+            phases += ["signal", "play"]
+        else:
+            splits += [settings.num_players] * (settings.num_tricks * 2)
+            phases += ["signal", "play"]
+    else:
+        splits += [settings.num_players * settings.num_tricks]
+        phases += ["play"]
+
+    assert sum(splits) == settings.get_seq_length()
+    assert len(splits) == len(phases)
+
+    if as_phase_index:
+        phases = [settings.get_phase_idx(x) for x in phases]
+        assert all(0 <= x < settings.num_phases for x in phases)
+
+    return splits, phases

@@ -6,3 +6,5 @@ cpp_lib/
 .pytest_cache/
 .ruff_cache/
 .vscode/
+src/frontend
+src/backend

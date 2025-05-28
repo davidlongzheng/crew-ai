@@ -6,11 +6,12 @@ from functools import cached_property
 from typing import Literal, cast
 
 import click
+import numpy as np
 
-from ..lib.utils import coerce_string
-from .types import TRUMP_SUIT_NUM
+from game.types import TRUMP_SUIT_NUM
+from lib.utils import coerce_string
 
-DEFAULT_PRESET = "easy_p4"
+DEFAULT_PRESET = "all"
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class Settings:
     task_idxs: tuple[int, ...] = field(default_factory=tuple)
     min_difficulty: int | None = None
     max_difficulty: int | None = None
+    difficulty_distro: list[float] | None = None
     max_num_tasks: int | None = None
 
     use_drafting: bool = False
@@ -50,6 +52,7 @@ class Settings:
     # completed tasks. The math is the same s.t. the final value is again
     # from [-1, 1]
     win_bonus: float = field(default=1, compare=False)
+    weight_by_difficulty: bool = field(default=True, compare=False)
 
     def __post_init__(self):
         assert self.num_side_suits <= TRUMP_SUIT_NUM
@@ -60,12 +63,21 @@ class Settings:
             == (self.max_difficulty is None)
             == (self.max_num_tasks is None)
         )
+        if self.difficulty_distro is not None:
+            assert self.min_difficulty is not None
+            assert self.max_difficulty is not None
+            assert (
+                len(self.difficulty_distro)
+                == self.max_difficulty - self.min_difficulty + 1
+            )
+            assert np.isclose(sum(self.difficulty_distro), 1.0)
+
         if self.use_drafting:
             assert self.num_draft_tricks > 0
             assert self.num_draft_tricks * self.num_players >= self.get_max_num_tasks()
 
         if self.min_difficulty is not None:
-            assert self.min_difficulty < self.max_difficulty
+            assert self.min_difficulty <= self.max_difficulty
 
     @cached_property
     def num_cards(self):
@@ -84,7 +96,7 @@ class Settings:
 
     @cached_property
     def task_defs(self):
-        from .tasks import get_task_defs
+        from game.tasks import get_task_defs
 
         return get_task_defs(self.bank)
 
@@ -143,6 +155,18 @@ class Settings:
         else:
             raise ValueError(phase)
 
+    def get_phase(self, phase_idx: int):
+        if phase_idx == 0:
+            return "play"
+        elif self.use_signals and phase_idx == 1:
+            return "signal"
+        else:
+            assert self.use_drafting and (
+                (phase_idx == 1 and not self.use_signals)
+                or (phase_idx == 2 and self.use_signals)
+            )
+            return "draft"
+
     @cached_property
     def use_nosignal(self):
         return self.use_signals and not self.single_signal and not self.cheating_signal
@@ -191,11 +215,13 @@ class Settings:
             self.task_idxs,
             self.min_difficulty,
             self.max_difficulty,
+            self.difficulty_distro,
             self.max_num_tasks,
             self.use_drafting,
             self.num_draft_tricks,
             self.task_bonus,
             self.win_bonus,
+            self.weight_by_difficulty,
         )
         return cpp_settings
 
@@ -220,6 +246,15 @@ def get_preset(preset):
             min_difficulty=4,
             max_difficulty=7,
             max_num_tasks=4,
+            use_signals=False,
+            use_drafting=True,
+        )
+    elif preset == "all":
+        return Settings(
+            bank="all",
+            min_difficulty=4,
+            max_difficulty=17,
+            max_num_tasks=8,
             use_signals=False,
             use_drafting=True,
         )

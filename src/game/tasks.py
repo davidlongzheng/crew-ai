@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Literal, cast, get_args, override
 
-from .settings import Settings
-from .types import TO_SUIT_NUM, Card
+from game.settings import Settings
+from game.types import TO_SUIT_NUM, Card
 
 if TYPE_CHECKING:
-    from .state import State
+    from game.state import State
 
 Status = Literal["success", "fail", "unresolved"]
 Direction = Literal[">", "<", ">=", "=", "<="]
@@ -296,7 +296,7 @@ class SweepCond(Condition):
                 x == self.settings.side_suit_length
                 for x in self.cards_won_per_suit.values()
             )
-            self.partial_value = num_sweeps / self.num_sweeps
+            self.partial_value = min(1.0, num_sweeps / self.num_sweeps)
             if num_sweeps >= self.num_sweeps:
                 self.status = "success"
 
@@ -589,42 +589,24 @@ def parse_token(token: str, settings: Settings, player: int) -> Condition:
     raise NotImplementedError("unhandled", orig_token)
 
 
+@dataclass(kw_only=True)
 class Task:
-    def __init__(self, formula: str, desc: str, difficulty: int, task_idx: int):
-        self.formula = formula
-        self.desc = desc or formula
-        self.difficulty = difficulty
-        self.task_idx = task_idx
-
-    def __eq__(self, other):
-        return isinstance(other, Task) and self.formula == other.formula
-
-    def __hash__(self):
-        return hash(self.formula)
-
-    def __str__(self):
-        return self.desc
-
-    def __repr__(self):
-        return f"Task({self.desc})"
+    formula: str
+    desc: str
+    difficulty: int
+    task_idx: int
 
 
+@dataclass(kw_only=True)
 class AssignedTask(Task):
-    def __init__(
-        self,
-        formula: str,
-        desc: str,
-        difficulty: int,
-        task_idx: int,
-        player: int,
-        settings: Settings,
-    ):
-        super().__init__(formula, desc, difficulty, task_idx)
-        self.player = player
-        self.settings = settings
+    player: int
+    settings: Settings
+    status: Status = "unresolved"
+    value: float = 0
+    conds: list[Condition] = field(default_factory=list, init=False)
+
+    def __post_init__(self):
         self.parse_formula()
-        self.status: Status = "unresolved"
-        self.value = 0
 
     def parse_formula(self):
         tokens = self.formula.split()
@@ -680,11 +662,13 @@ class AssignedTask(Task):
             if self.in_one_trick:
                 cond.on_end()
 
-        if all(cond.status == "success" for cond in self.conds):
+        if all(cond.status == "success" for cond in self.conds) and (
+            not self.in_one_trick or state.trick_winner == self.player
+        ):
             assert self.status in ["unresolved", "success"]
             self.status = "success"
 
-        if self.in_one_trick:
+        if self.in_one_trick and self.status != "success":
             for cond in self.conds:
                 cond.reset()
                 assert cond.status == "unresolved"
@@ -698,7 +682,9 @@ class AssignedTask(Task):
     def on_game_end(self) -> None:
         """on_trick_end task state at end of game."""
         if self.in_one_trick:
-            self.status = "fail"
+            assert self.status != "fail"
+            if self.status == "unresolved":
+                self.status = "fail"
             self.compute_value()
             return
 
@@ -831,7 +817,7 @@ TASK_DEFS = [
     ("no(consec(2))", "I will never win 2 tricks in a row.", 2),
     ("#8=0 #9=0", "I will win no 8 or 9's.", 3),
     ("#1=0", "I will win no 1.", 2),
-    ("#p=1 #g=1", "I will win exactly 1p and 1g.", 4),
+    ("#p=1 #g=1", "I will win exactly 1 pink and 1 green.", 4),
     ("3g 4y 5y", "I will 3g 4y and 5y.", 4),
     ("no(T0) no(T1) no(T2) no(T3) no(T4)", "I will none of the first 5 tricks.", 3),
     ("3b 3g 3y 3p", "I will win 3b 3g 3y 3p.", 4),

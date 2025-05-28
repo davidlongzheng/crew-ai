@@ -219,7 +219,7 @@ void SweepCond::on_trick_end(const State &state)
             }
         }
 
-        partial_value = static_cast<double>(num_sweeps_) / num_sweeps;
+        partial_value = std::min(1.0, static_cast<double>(num_sweeps_) / num_sweeps);
 
         if (num_sweeps_ >= num_sweeps)
         {
@@ -507,13 +507,13 @@ void AssignedTask::on_trick_end(const State &state)
         }
     }
 
-    if (all_success)
+    if (all_success && (!in_one_trick || state.trick_winner == player))
     {
         assert(status == Status::kUnresolved || status == Status::kSuccess);
         status = Status::kSuccess;
     }
 
-    if (in_one_trick)
+    if (in_one_trick && status != Status::kSuccess)
     {
         for (auto &cond : conds)
         {
@@ -548,7 +548,11 @@ void AssignedTask::on_game_end()
 {
     if (in_one_trick)
     {
-        status = Status::kFail;
+        assert(status != Status::kFail);
+        if (status == Status::kUnresolved)
+        {
+            status = Status::kFail;
+        }
         compute_value();
         return;
     }

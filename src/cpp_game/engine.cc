@@ -62,13 +62,17 @@ std::vector<std::vector<Card>> Engine::gen_hands(Rng &rng) const
     return hands;
 }
 
-std::vector<int> Engine::gen_tasks(Rng &rng) const
+std::pair<std::vector<int>, int> Engine::gen_tasks(Rng &rng) const
 {
     std::vector<int> task_idxs;
+    int difficulty;
     if (!settings.task_idxs.empty())
     {
         task_idxs = std::vector<int>(settings.task_idxs.begin(),
                                      settings.task_idxs.end());
+        difficulty = std::accumulate(task_idxs.begin(), task_idxs.end(), 0,
+                                     [&](int sum, int task_idx)
+                                     { return sum + std::get<2>(settings.task_defs[task_idx]); });
     }
     else
     {
@@ -76,9 +80,22 @@ std::vector<int> Engine::gen_tasks(Rng &rng) const
                settings.max_difficulty.has_value() &&
                settings.max_num_tasks.has_value());
 
-        int difficulty = rng.randint(
-            settings.min_difficulty.value(),
-            settings.max_difficulty.value());
+        if (settings.difficulty_distro.has_value())
+        {
+            int min_ = settings.min_difficulty.value();
+            int max_ = settings.max_difficulty.value();
+            std::vector<int> difficulties(max_ - min_ + 1);
+            std::iota(difficulties.begin(), difficulties.end(), min_);
+            difficulty = rng.choice(
+                difficulties,
+                settings.difficulty_distro.value());
+        }
+        else
+        {
+            difficulty = rng.randint(
+                settings.min_difficulty.value(),
+                settings.max_difficulty.value());
+        }
 
         while (true)
         {
@@ -111,11 +128,11 @@ std::vector<int> Engine::gen_tasks(Rng &rng) const
         }
     }
 
-    return task_idxs;
+    return std::make_pair(task_idxs, difficulty);
 }
 
 std::vector<std::vector<AssignedTask>> Engine::assign_tasks(
-    int leader, Rng &rng, std::vector<int> &task_idxs) const
+    int leader, Rng &rng, std::vector<int> task_idxs) const
 {
     std::vector<std::vector<AssignedTask>> assigned_tasks(settings.num_players);
 
@@ -201,7 +218,7 @@ void Engine::reset_state(std::optional<int> seed)
     state.past_tricks = std::vector<std::pair<std::vector<Card>, int>>();
     state.signals = std::vector<std::optional<Signal>>(settings.num_players);
     state.trick_winner = std::nullopt;
-    std::vector<int> task_idxs = gen_tasks(rng);
+    auto [task_idxs, difficulty] = gen_tasks(rng);
     if (settings.use_drafting)
     {
         state.assigned_tasks = std::vector<std::vector<AssignedTask>>(settings.num_players);
@@ -212,6 +229,8 @@ void Engine::reset_state(std::optional<int> seed)
         state.assigned_tasks = assign_tasks(leader, rng, task_idxs);
         state.unassigned_task_idxs = std::vector<int>();
     }
+    state.task_idxs = task_idxs;
+    state.difficulty = difficulty;
     state.status = Status::kUnresolved;
     state.value = 0.0;
 }
@@ -496,18 +515,18 @@ double Engine::move(const Action &action)
     double prev_value = state.value;
 
     double total_task_value = 0.0;
-    double total_difficulty = 0.0;
+    double total_weight = 0.0;
 
     for (const auto &tasks : state.assigned_tasks)
     {
         for (const auto &task : tasks)
         {
-            total_task_value += task.value * task.difficulty;
-            total_difficulty += task.difficulty;
+            total_task_value += task.value * (settings.weight_by_difficulty ? task.difficulty : 1.0);
+            total_weight += settings.weight_by_difficulty ? task.difficulty : 1.0;
         }
     }
 
-    double avg_tasks_value = total_task_value / total_difficulty;
+    double avg_tasks_value = total_task_value / total_weight;
     assert(-1 <= avg_tasks_value && avg_tasks_value <= 1);
 
     double win_bonus = 0.0;

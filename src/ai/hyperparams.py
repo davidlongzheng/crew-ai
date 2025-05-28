@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import click
 import torch
 
-from ..lib.utils import coerce_string
+from lib.utils import coerce_string
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -18,11 +18,11 @@ class Hyperparams:
     profile_memory: bool = False
 
     # Each round is a single iteration of PPO clip.
-    num_rounds: int = 100
+    num_rounds: int = 1000
     # Each epoch goes through all the trajectories of a given round.
     num_epochs_per_round: int = 3
     # Number of trajectories in an epoch.
-    num_train_rollouts_per_round: int = 8192
+    num_train_rollouts_per_round: int = 32768
     num_val_rollouts_per_round: int = 1024
     # Number of trajectories in a batch.
     batch_size: int = 160
@@ -52,34 +52,28 @@ class Hyperparams:
     policy_ppo_clip_ratio: float = 0.2
     policy_ppo_coef: float = 1.0
     policy_entropy_coef: float = 1e-2
-    value_loss_method: str = "mse"
-    value_smooth_l1_beta: float = 0.25
     value_coef: float = 1.0
     aux_info_coef: float = 0.0
+    # Weighting scheme when computing PPO loss
+    # or value loss.
+    signal_weight: float = 1.0
+    draft_weight: float = 1.0
 
     # For embeddings
     embed_dim: int = 32
     embed_dropout: float = 0.04286
-    # thermometer encodings for
-    # player, trick, rank
-    embed_use_pos: bool = False
-    embed_sep_trump_rank: bool = True
 
     # For embedding a hand from a set of card embeddings
     hand_hidden_dim: int = 64
     hand_embed_dim: int = 48
     hand_num_hidden_layers: int = 1
-    hand_use_layer_norm: bool = True
     hand_dropout: float = 0.04286
-    hand_agg_method: str = "maxpool"
 
     # For tasks embedding
     tasks_hidden_dim: int = 64
     tasks_embed_dim: int = 48
     tasks_num_hidden_layers: int = 1
-    tasks_use_layer_norm: bool = True
     tasks_dropout: float = 0.04286
-    tasks_agg_method: str = "maxpool"
 
     # For public history LSTM/Transformer
     hist_hidden_dim: int = 160
@@ -93,7 +87,7 @@ class Hyperparams:
     backbone_num_hidden_layers: int = 2
     backbone_output_dim: int = 16
     backbone_dropout: float = 0.04286
-    backbone_no_head: bool = False
+    backbone_phase_branch: bool = False
 
     # For policy network
     policy_hidden_dim: int = 96
@@ -101,7 +95,7 @@ class Hyperparams:
     policy_dropout: float = 0.04286
     policy_query_dim: int = 80  # Attention vector on policy output.
     policy_signal_prior: str = "lin"
-    policy_phase_branch: bool = False
+    policy_phase_branch: bool = True
 
 
 class HyperparamsType(click.ParamType):

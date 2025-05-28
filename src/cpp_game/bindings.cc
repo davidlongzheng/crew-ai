@@ -53,13 +53,14 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind Settings class
     py::class_<Settings>(m, "Settings")
-        .def(py::init<int, int, bool, int, int, bool, bool, bool, std::string, std::string, std::vector<int>, std::optional<int>, std::optional<int>, std::optional<int>, bool, int, double, double>(),
+        .def(py::init<int, int, bool, int, int, bool, bool, bool, std::string, std::string, std::vector<int>, std::optional<int>, std::optional<int>, std::optional<std::vector<double>>, std::optional<int>, bool, int, double, double, bool>(),
              py::arg("num_players_"), py::arg("num_side_suits_"), py::arg("use_trump_suit_"),
              py::arg("side_suit_length_"), py::arg("trump_suit_length_"), py::arg("use_signals_"),
              py::arg("single_signal_"), py::arg("cheating_signal_"), py::arg("bank_"),
              py::arg("task_distro_"), py::arg("task_idxs_"), py::arg("min_difficulty_"),
-             py::arg("max_difficulty_"), py::arg("max_num_tasks_"), py::arg("use_drafting_"),
-             py::arg("num_draft_tricks_"), py::arg("task_bonus_"), py::arg("win_bonus_"))
+             py::arg("max_difficulty_"), py::arg("difficulty_distro_"), py::arg("max_num_tasks_"), py::arg("use_drafting_"),
+             py::arg("num_draft_tricks_"), py::arg("task_bonus_"), py::arg("win_bonus_"),
+             py::arg("weight_by_difficulty_"))
         .def_readwrite("num_players", &Settings::num_players)
         .def_readwrite("num_side_suits", &Settings::num_side_suits)
         .def_readwrite("use_trump_suit", &Settings::use_trump_suit)
@@ -73,6 +74,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("task_idxs", &Settings::task_idxs)
         .def_readwrite("min_difficulty", &Settings::min_difficulty)
         .def_readwrite("max_difficulty", &Settings::max_difficulty)
+        .def_readwrite("difficulty_distro", &Settings::difficulty_distro)
         .def_readwrite("max_num_tasks", &Settings::max_num_tasks)
         .def_readwrite("use_drafting", &Settings::use_drafting)
         .def_readwrite("num_draft_tricks", &Settings::num_draft_tricks)
@@ -303,7 +305,8 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("turn", &MoveInputs::turn)
         .def_readwrite("phase", &MoveInputs::phase)
         .def_readwrite("valid_actions", &MoveInputs::valid_actions)
-        .def_readwrite("task_idxs", &MoveInputs::task_idxs);
+        .def_readwrite("task_idxs", &MoveInputs::task_idxs)
+        .def_readonly("is_done", &MoveInputs::is_done);
 
     // Bind RolloutResults struct
     py::class_<RolloutResults>(m, "RolloutResults")
@@ -323,7 +326,9 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("log_probs", &RolloutResults::log_probs)
         .def_readwrite("actions", &RolloutResults::actions)
         .def_readwrite("rewards", &RolloutResults::rewards)
-        .def_readwrite("frac_success", &RolloutResults::frac_success)
+        .def_readwrite("task_idxs_no_pt", &RolloutResults::task_idxs_no_pt)
+        .def_readwrite("task_success", &RolloutResults::task_success)
+        .def_readwrite("difficulty", &RolloutResults::difficulty)
         .def_readwrite("win", &RolloutResults::win)
         .def_readwrite("aux_info", &RolloutResults::aux_info);
 
@@ -338,8 +343,8 @@ PYBIND11_MODULE(cpp_game, m)
 
     // Bind BatchRollout class
     py::class_<BatchRollout>(m, "BatchRollout")
-        .def(py::init<const Settings &, int, bool>(),
-             py::arg("settings"), py::arg("num_rollouts"), py::arg("multithread") = false)
+        .def(py::init<const Settings &, int, int>(),
+             py::arg("settings"), py::arg("num_rollouts"), py::arg("num_threads") = 1)
         .def_readonly("num_rollouts", &BatchRollout::num_rollouts)
         .def("reset_state", &BatchRollout::reset_state,
              py::arg("engine_seeds"))
@@ -353,5 +358,6 @@ PYBIND11_MODULE(cpp_game, m)
         .def(py::init<const std::optional<int> &>(),
              py::arg("seed") = std::nullopt)
         .def("randint", &Rng::randint)
-        .def("shuffle_idxs", &Rng::shuffle_idxs);
+        .def("shuffle_idxs", &Rng::shuffle_idxs)
+        .def("choice", &Rng::choice);
 }

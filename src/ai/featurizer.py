@@ -1,8 +1,8 @@
 import torch
 from tensordict import TensorDict
 
-from ..game.settings import Settings
-from ..lib.types import StrMap
+from game.settings import Settings
+from lib.types import StrMap
 
 
 def featurize(

@@ -9,7 +9,7 @@
 #include "engine.h"
 #include "settings.h"
 #include "types.h"
-#include "thread_pool.h"
+#include "lockfree_pool.h"
 namespace py = pybind11;
 
 struct MoveInputs
@@ -33,6 +33,8 @@ struct MoveInputs
 
     // Action tensors
     py::array_t<int8_t> valid_actions;
+
+    bool is_done = false;
 };
 
 struct RolloutResults
@@ -61,7 +63,9 @@ struct RolloutResults
     py::array_t<float> log_probs;
     py::array_t<long> actions;
     py::array_t<float> rewards;
-    py::array_t<float> frac_success;
+    py::array_t<int8_t> task_idxs_no_pt;
+    py::array_t<bool> task_success;
+    py::array_t<int8_t> difficulty;
     py::array_t<bool> win;
 
     // Aux info
@@ -117,8 +121,8 @@ struct Rollout
     // Helper functions
     void add_tasks(std::vector<int8_t> &vec);
     void encode_aux_info();
-    void add_card(std::vector<int8_t> &vec, const Card &card);
-    void add_action(std::vector<int8_t> &vec, const Action &action);
+    int add_card(std::vector<int8_t> &vec, int i, const Card &card);
+    int add_action(std::vector<int8_t> &vec, int i, const Action &action);
     void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand);
     void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions);
     void add_log_probs(const py::array_t<float> &log_probs);
@@ -126,11 +130,11 @@ struct Rollout
 
 struct BatchRollout
 {
-    BatchRollout(const Settings &settings, int num_rollouts, bool multithread = false);
+    BatchRollout(const Settings &settings, int num_rollouts, int num_threads = 1);
     void reset_state(const std::vector<int> &engine_seeds);
 
     const MoveInputs &get_move_inputs();
-    void move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs);
+    const MoveInputs &move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs);
     bool is_done() const;
     const RolloutResults &get_results();
 
@@ -146,5 +150,6 @@ struct BatchRollout
     MoveInputs move_inputs;
     RolloutResults results;
 
-    std::unique_ptr<ThreadPool> pool;
+    std::vector<int8_t> action_idxs;
+    std::unique_ptr<FixedThreadPool> pool;
 };

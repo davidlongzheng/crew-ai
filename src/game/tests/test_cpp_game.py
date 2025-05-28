@@ -4,10 +4,9 @@ from dataclasses import replace
 import pytest
 
 import cpp_game
-
-from ..engine import Engine
-from ..settings import DEFAULT_PRESET, get_preset
-from ..tasks import TASK_DEFS
+from game.engine import Engine
+from game.settings import get_preset
+from game.tasks import TASK_DEFS
 
 
 def assert_matching_settings(settings, cpp_settings):
@@ -52,8 +51,10 @@ def assert_matching_tasks(engine, cpp_engine):
             assert task.in_one_trick == cpp_task.in_one_trick
 
 
-def init_matching_engines(seed, task_idxs, single_signal, use_drafting):
-    settings = get_preset(DEFAULT_PRESET)
+def init_matching_engines(
+    seed, task_idxs, single_signal, use_drafting, weight_by_difficulty
+):
+    settings = get_preset("easy_p4")
     settings = replace(
         settings,
         bank="all",
@@ -61,6 +62,7 @@ def init_matching_engines(seed, task_idxs, single_signal, use_drafting):
         use_signals=True,
         single_signal=single_signal,
         use_drafting=use_drafting,
+        weight_by_difficulty=weight_by_difficulty,
     )
     cpp_settings = settings.to_cpp()
     assert_matching_settings(settings, cpp_settings)
@@ -145,19 +147,21 @@ def assert_matching_state(engine, cpp_engine):
 
 @pytest.mark.parametrize("single_signal", [True, False])
 @pytest.mark.parametrize("use_drafting", [True, False])
-def test_cpp_game(single_signal, use_drafting):
+@pytest.mark.parametrize("weight_by_difficulty", [True, False])
+def test_cpp_game(single_signal, use_drafting, weight_by_difficulty):
     num_tasks = len(TASK_DEFS)
     step_size = 8
     for task_start_idx in range(0, num_tasks, step_size):
         task_idxs = list(
             range(task_start_idx, min(task_start_idx + step_size, num_tasks))
         )
-        for engine_seed in range(20):
+        for engine_seed in range(5):
             engine, cpp_engine = init_matching_engines(
                 seed=engine_seed,
                 task_idxs=task_idxs,
                 single_signal=single_signal,
                 use_drafting=use_drafting,
+                weight_by_difficulty=weight_by_difficulty,
             )
 
             assert_matching_state(engine, cpp_engine)

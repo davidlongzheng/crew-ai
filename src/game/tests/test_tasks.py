@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import cast
 
-from ..settings import Settings
-from ..state import State
-from ..tasks import TASK_DEFS, AssignedTask
-from ..types import Card
+from game.settings import Settings
+from game.state import State
+from game.tasks import TASK_DEFS, AssignedTask
+from game.types import Card
 
 
 @dataclass

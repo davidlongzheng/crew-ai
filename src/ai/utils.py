@@ -61,3 +61,15 @@ class MLP(nn.Module):
             x = self.out_fc(x)
 
         return x
+
+
+def win_rate_by_difficulty(td):
+    win = td["win"].float()
+    difficulty = td["difficulty"]
+    unique_cats, bin_indices = torch.unique(difficulty, return_inverse=True)
+
+    bin_sums = torch.bincount(bin_indices, weights=win)
+    bin_counts = torch.bincount(bin_indices)
+    bin_means = bin_sums / bin_counts
+
+    return dict(zip(unique_cats.tolist(), bin_means.tolist()))

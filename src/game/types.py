@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Literal
+
+from pydantic.dataclasses import dataclass
 
 TRUMP_SUIT_NUM = 4
 TO_SUIT_LETTER = {0: "b", 1: "g", 2: "p", 3: "y", 4: "t"}
@@ -52,11 +53,16 @@ class Action:
     def __str__(self):
         if self.type == "draft":
             return f"P{self.player} drafts {self.task_idx}."
-        elif self.type == "nodraft":
-            return f"P{self.player} does not draft."
-        elif self.type == "nosignal":
-            return f"P{self.player} does not signal."
+        elif self.type in ["nodraft", "nosignal"]:
+            return f"P{self.player} passes."
         return f"P{self.player} {self.type}s {self.card}."
+
+    def short_str(self):
+        if self.type == "draft":
+            return str(self.task_idx)
+        elif self.type in ["nodraft", "nosignal"]:
+            return "no"
+        return str(self.card)
 
     def __repr__(self):
         return str(self)
@@ -70,3 +76,12 @@ class Signal:
     card: Card
     value: SignalValue
     trick: int
+
+
+@dataclass(frozen=True)
+class Event:
+    type: Literal["action", "trick_winner", "new_trick", "game_ended"]
+    action: Action | None = None
+    phase: Phase | None = None
+    trick: int | None = None
+    trick_winner: int | None = None

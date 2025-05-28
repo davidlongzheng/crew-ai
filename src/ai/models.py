@@ -1,54 +1,22 @@
 from functools import cached_property
+from pathlib import Path
 from typing import Callable, cast
 
 import torch
 from tensordict import TensorDict
 from torch import Tensor, nn
 
-from ..game.settings import Settings
-from .embedding import (
+from ai.embedding import (
     ActionModel,
     HandModel,
     PaddedEmbed,
     TasksModel,
     get_embed_models,
 )
-from .hyperparams import Hyperparams
-from .utils import MLP
-
-
-def get_splits_and_phases(settings):
-    if settings.use_drafting:
-        splits = [settings.num_players * settings.num_draft_tricks]
-        phases = [settings.get_phase_idx("draft")]
-    else:
-        splits = []
-        phases = []
-
-    if settings.use_signals:
-        if settings.single_signal:
-            splits += [
-                settings.num_players,
-                settings.num_players * settings.num_tricks,
-            ]
-            phases += [
-                settings.get_phase_idx("signal"),
-                settings.get_phase_idx("play"),
-            ]
-        else:
-            splits += [settings.num_players] * (settings.num_tricks * 2)
-            phases += [
-                settings.get_phase_idx("signal"),
-                settings.get_phase_idx("play"),
-            ]
-    else:
-        splits += [settings.num_players * settings.num_tricks]
-        phases += [settings.get_phase_idx("play")]
-
-    assert sum(splits) == settings.get_seq_length()
-    assert len(splits) == len(phases)
-    assert all(0 <= x < settings.num_phases for x in phases)
-    return splits, phases
+from ai.hyperparams import Hyperparams
+from ai.utils import MLP
+from game.settings import Settings
+from game.utils import get_splits_and_phases
 
 
 class BranchedLSTM(nn.Module):
@@ -248,7 +216,8 @@ class BackboneModel(nn.Module):
         num_hidden_layers: int,
         output_dim: int,
         dropout: float,
-        backbone_no_head: bool,
+        phase_branch: bool,
+        settings: Settings,
     ):
         super().__init__()
         self.hist_model = hist_model
@@ -256,36 +225,34 @@ class BackboneModel(nn.Module):
         self.player_embed = player_embed
         self.trick_embed = trick_embed
         self.turn_embed = turn_embed
-        self.phase_embed = phase_embed
+        self.phase_branch = phase_branch
+        self.phase_embed = None if phase_branch else phase_embed
         self.tasks_embed = tasks_embed
-        output_dim = hidden_dim if backbone_no_head else output_dim
         self.output_dim = output_dim + self.hist_model.output_dim
         input_dim = (
             self.hist_model.output_dim
-            + embed_dim * 4
+            + embed_dim * (3 if phase_branch else 4)
             + self.tasks_embed.output_dim
             + self.hand_embed.output_dim
         )
         self.layer_norm = nn.LayerNorm(input_dim)
-        self.mlp = MLP(
+        make_mlp = lambda: MLP(
             input_dim,
             hidden_dim,
-            output_dim=(None if backbone_no_head else output_dim),
+            output_dim,
             num_hidden_layers=num_hidden_layers,
             dropout=dropout,
         )
+        if phase_branch:
+            self.mlp: nn.Module = BranchedFF(make_mlp, settings)
+        else:
+            self.mlp = make_mlp()
 
-        self.final_layer_norm = None if backbone_no_head else nn.LayerNorm(output_dim)
+        self.final_layer_norm = nn.LayerNorm(output_dim)
 
     @cached_property
     def mlp_params(self):
         return list(self.mlp.parameters())
-
-    def start_single_step(self):
-        self.hist_model.start_single_step()
-
-    def stop_single_step(self):
-        self.hist_model.stop_single_step()
 
     def forward(
         self,
@@ -298,21 +265,24 @@ class BackboneModel(nn.Module):
         player_embed = self.player_embed(private_inps["player_idx"])
         trick_embed = self.trick_embed(private_inps["trick"], private_inps["phase"])
         turn_embed = self.turn_embed(private_inps["turn"])
-        phase_embed = self.phase_embed(private_inps["phase"])
-        x = torch.cat(
-            [
-                hist_embed,
-                player_embed,
-                trick_embed,
-                turn_embed,
-                phase_embed,
-                tasks_embed,
-                hand_embed,
-            ],
-            dim=-1,
-        )
+        inps = [
+            hist_embed,
+            player_embed,
+            trick_embed,
+            turn_embed,
+            tasks_embed,
+            hand_embed,
+        ]
+        if not self.phase_branch:
+            phase_embed = cast(nn.Module, self.phase_embed)(private_inps["phase"])
+            inps.append(phase_embed)
+
+        x = torch.cat(inps, dim=-1)
         x = self.layer_norm(x)
-        x = self.mlp(x)
+        if self.phase_branch:
+            x = self.mlp(x, private_inps["phase"])
+        else:
+            x = self.mlp(x)
         if self.final_layer_norm:
             x = self.final_layer_norm(x)
         x = torch.cat([x, hist_embed], dim=-1)
@@ -388,7 +358,7 @@ class PolicyHead(nn.Module):
         phase: Tensor,
         trick: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        """valid_actions=(...,A,2)"""
+        """valid_actions=(...,A,3)"""
 
         single_step = len(valid_actions.shape) == 3
         valid_actions_embed = self.action_embed(valid_actions, single_step)
@@ -491,26 +461,21 @@ class PolicyValueModel(nn.Module):
     @cached_property
     def param_groups(self):
         return {
-            "policy_head": self.policy_head.head_params,
-            "value_head": list(self.value_head.parameters()),
             "hist": self.backbone_model.hist_model.hist_params,
             "mlp": self.backbone_model.mlp_params,
-            # phase, trick, turn
-            "basic_embed": list(self.backbone_model.phase_embed.parameters())
-            + list(self.backbone_model.player_embed.parameters())
-            + list(self.backbone_model.trick_embed.parameters())
-            + list(self.backbone_model.turn_embed.parameters()),
-            "hand": list(self.backbone_model.hand_embed.hand_params),
-            "card": list(self.backbone_model.hand_embed.card_model.parameters()),
-            "task": list(self.backbone_model.tasks_embed.task_model.parameters()),
-            "tasks": list(self.backbone_model.tasks_embed.tasks_params),
         }
 
     def start_single_step(self):
-        self.backbone_model.start_single_step()
+        self.backbone_model.hist_model.start_single_step()
 
     def stop_single_step(self):
-        self.backbone_model.stop_single_step()
+        self.backbone_model.hist_model.stop_single_step()
+
+    def get_state(self):
+        return self.backbone_model.hist_model.state
+
+    def set_state(self, state):
+        self.backbone_model.hist_model.state = state
 
     def forward(self, inps):
         backbone_embed = self.backbone_model(inps["hist"], inps["private"])
@@ -562,7 +527,8 @@ def get_models(
         hp.backbone_num_hidden_layers,
         hp.backbone_output_dim,
         hp.backbone_dropout,
-        hp.backbone_no_head,
+        hp.backbone_phase_branch,
+        settings,
     )
     if hp.aux_info_coef:
         aux_info_head = AuxInfoHead(
@@ -595,3 +561,20 @@ def get_models(
         aux_info_head,
     )
     return ret
+
+
+def load_model_for_eval(path: Path):
+    settings_dict = torch.load(path / "settings.pth", weights_only=False)
+    hp = settings_dict["hp"]
+    settings = settings_dict["settings"]
+    models = get_models(hp, settings)
+    pv_model = cast(PolicyValueModel, models["pv"])
+    checkpoint = torch.load(
+        path / "checkpoint.pth",
+        weights_only=False,
+        map_location=torch.device("cpu"),
+    )
+    pv_model.load_state_dict(checkpoint["pv_model"])
+    pv_model.eval()
+    pv_model.start_single_step()
+    return pv_model, settings

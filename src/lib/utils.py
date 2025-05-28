@@ -17,6 +17,12 @@ def coerce_string(value):
     elif value.lower() == "false":
         return False
 
+    if value.startswith("("):
+        assert value.endswith(")")
+        return tuple(
+            int(x) for x in value.removeprefix("(").removesuffix(")").split("_")
+        )
+
     try:
         return int(value)
     except ValueError:
