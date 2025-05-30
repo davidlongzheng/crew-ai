@@ -167,6 +167,7 @@ class Engine:
             assigned_tasks = self.assign_tasks(leader, rng, task_idxs)
             unassigned_task_idxs = []
 
+        shown_out = {suit: False for suit in self.settings.get_suits()}
         self.state = State(
             num_players=self.settings.num_players,
             phase=phase,
@@ -187,6 +188,7 @@ class Engine:
             assigned_tasks=assigned_tasks,
             status="unresolved",
             value=0.0,
+            shown_out=[shown_out for _ in range(self.settings.num_players)],
         )
         self.state.history.append(
             Event(type="new_trick", phase=self.state.phase, trick=self.state.trick)
@@ -314,6 +316,8 @@ class Engine:
             self.state.history.append(
                 Event(type="action", phase=self.state.phase, action=action)
             )
+            if action.card.suit != self.state.lead_suit:
+                self.state.shown_out[self.state.cur_player][self.state.lead_suit] = True
 
             if self.state.get_next_player() == self.state.leader:
                 trick_winner = self.calc_trick_winner(self.state.active_cards)

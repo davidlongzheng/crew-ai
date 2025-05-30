@@ -8,58 +8,6 @@ from game.settings import Settings
 
 
 @dataclass(frozen=True)
-class Lesson:
-    # difficulty
-    min_difficulty: int
-    max_difficulty: int
-    difficulty_distro: list[float] | None = None
-
-    # triggers for advancing to next lesson
-    target_difficulty: int | None = None
-    # Minimum win rate on target difficulty before advancing
-    win_thresh: float | None = None
-    no_improve_num_rounds: int | None = None
-    min_improve_by: float = 0.0
-
-    def __post_init__(self):
-        assert self.min_difficulty <= self.max_difficulty
-
-        if self.difficulty_distro is not None:
-            assert len(self.difficulty_distro) == (
-                self.max_difficulty - self.min_difficulty + 1
-            )
-
-        if self.win_thresh is not None or self.no_improve_num_rounds is not None:
-            assert (
-                self.target_difficulty is not None
-                and self.min_difficulty <= self.target_difficulty <= self.max_difficulty
-            )
-
-    def should_advance(self, td, lesson_state: dict):
-        win_rate = td["win"][td["difficulty"] == self.target_difficulty].float().mean()
-
-        if (
-            "last_win_rate" not in lesson_state
-            or win_rate > lesson_state["last_win_rate"] + self.min_improve_by
-        ):
-            lesson_state["last_win_rate"] = win_rate.item()
-            lesson_state["no_improve_num_rounds"] = 0
-        else:
-            lesson_state["no_improve_num_rounds"] += 1
-
-        if self.win_thresh and win_rate < self.win_thresh:
-            return False
-
-        if (
-            self.no_improve_num_rounds
-            and lesson_state["no_improve_num_rounds"] < self.no_improve_num_rounds
-        ):
-            return False
-
-        return True
-
-
-@dataclass(frozen=True)
 class Curriculum:
     start_min_difficulty: int = 4
     start_max_difficulty: int = 7

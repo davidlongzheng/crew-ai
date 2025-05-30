@@ -23,8 +23,9 @@ from backend.app.schemas.game import (
     SettingsUpdated,
     StartedGame,
     StartGame,
+    TrickWon,
 )
-from backend.app.services.ai import AI, get_ai
+from ai.ai import AI, get_ai
 from game.engine import Engine
 from game.settings import Settings
 from game.tasks import Task
@@ -222,17 +223,22 @@ class GameRoom:
         self.players = list(range(self.settings.num_players))
         random.shuffle(self.players)
         self.players = self.players[: len(self.player_uids)]
-        self.auto_move()
+
+        msgs = []
         self.seqnum += 1
-        return StartedGame(
-            room_id=self.room_id,
-            seqnum=self.seqnum,
-            players=self.players,
-            cur_uid=self.cur_uid,
-            engine_state=self.engine.state,
-            valid_actions=self.valid_actions,
-            tasks=self.tasks,
+        msgs.append(
+            StartedGame(
+                room_id=self.room_id,
+                seqnum=self.seqnum,
+                players=self.players,
+                cur_uid=self.cur_uid,
+                engine_state=self.engine.state,
+                valid_actions=self.valid_actions,
+                tasks=self.tasks,
+            )
         )
+        msgs.extend(self.auto_move())
+        return msgs
 
     def engine_move(self, action=None):
         if self.ai is not None:
@@ -241,22 +247,49 @@ class GameRoom:
                 action = ai_action
             self.ai.record_move(self.engine, action, self.ai_state)
 
+        msgs = []
+        prev_trick = self.engine.state.trick
+        prev_phase = self.engine.state.phase
         self.engine.move(action)
+        self.seqnum += 1
+        msgs.append(
+            Moved(
+                room_id=self.room_id,
+                seqnum=self.seqnum,
+                action=action,
+                cur_uid=self.cur_uid,
+                engine_state=self.engine.state,
+                valid_actions=self.valid_actions,
+            )
+        )
+        if self.engine.state.trick > prev_trick and prev_phase == "play":
+            self.seqnum += 1
+            msgs.append(
+                TrickWon(
+                    room_id=self.room_id,
+                    seqnum=self.seqnum,
+                    trick=prev_trick,
+                    trick_winner=self.engine.state.past_tricks[-1][1],
+                )
+            )
+        return msgs
 
     def auto_move(self):
         assert self.engine is not None
+        msgs = []
 
         while self.engine.state.phase != "end":
             valid_actions = self.engine.valid_actions()
             if self.cur_uid.startswith("ai_"):
-                self.engine_move("ai")
+                msgs.extend(self.engine_move("ai"))
             elif len(valid_actions) == 1 and valid_actions[0].type in [
                 "nodraft",
                 "nosignal",
             ]:
-                self.engine_move(valid_actions[0])
+                msgs.extend(self.engine_move(valid_actions[0]))
             else:
                 break
+        return msgs
 
     def move(self, action: Action, uid: str):
         if self.stage != "play":
@@ -282,17 +315,15 @@ class GameRoom:
             logger.error(f"Trying to move but action {action} is invalid.")
             return None
 
-        self.engine_move(action)
-        self.auto_move()
-        self.seqnum += 1
-        return Moved(
-            room_id=self.room_id,
-            seqnum=self.seqnum,
-            action=action,
-            cur_uid=self.cur_uid,
-            engine_state=self.engine.state,
-            valid_actions=self.valid_actions,
-        )
+        msgs = []
+
+        # Make the move
+        msgs.extend(self.engine_move(action))
+
+        # Continue with auto moves
+        msgs.extend(self.auto_move())
+
+        return msgs
 
     def end_game(self):
         if self.stage != "play":
@@ -336,7 +367,11 @@ class GameRoom:
                 resp = self.end_game()
 
         if resp is not None:
-            await self.broadcast(resp)
+            if isinstance(resp, list):
+                for r in resp:
+                    await self.broadcast(r)
+            else:
+                await self.broadcast(resp)
 
         self.last_update_time = time.time()
 

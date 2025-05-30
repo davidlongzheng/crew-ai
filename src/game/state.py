@@ -29,6 +29,7 @@ class State:
     assigned_tasks: list[list[AssignedTask]]
     status: Literal["success", "fail", "unresolved"]
     value: float
+    shown_out: list[dict[int, bool]]
 
     def get_next_player(self, player=None):
         player = self.cur_player if player is None else player

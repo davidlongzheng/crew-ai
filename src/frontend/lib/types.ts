@@ -89,6 +89,8 @@ export interface ServerMessage {
   tasks?: Record<number, Task> | null;
   num_players?: number;
   difficulty?: number;
+  trick_winner?: number;
+  trick?: number;
 }
 
 export interface ClientMessage {

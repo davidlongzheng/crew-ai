@@ -13,7 +13,7 @@ def featurize(
     *,
     non_feature_dims: int,
     device: torch.device | None = None,
-) -> StrMap:
+) -> TensorDict:
     """Takes in a set of nn inputs and featurizes the inputs.
 
     Inputs to the func are either F, (T, F), (N, F), or (N, T, F).

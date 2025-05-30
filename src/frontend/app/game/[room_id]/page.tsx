@@ -94,6 +94,7 @@ const useMessageProcessor = (
           return;
         }
         if (message.seqnum !== gameState.seqnum + 1) {
+          console.log(message, gameState.seqnum);
           alert("Oops something went wrong. Please refresh the page.");
           return;
         }
@@ -173,6 +174,16 @@ const useMessageProcessor = (
             cur_uid: message.cur_uid ?? null,
             engine_state: message.engine_state!,
             valid_actions: message.valid_actions ?? null,
+          };
+        });
+        break;
+
+      case "trick_won":
+        setGameState((prev) => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            seqnum: message.seqnum!,
           };
         });
         break;

@@ -8,7 +8,7 @@ from typing import Literal, cast
 import click
 import numpy as np
 
-from game.types import TRUMP_SUIT_NUM
+from game.types import TRUMP_SUIT_NUM, Card
 from lib.utils import coerce_string
 
 DEFAULT_PRESET = "all"
@@ -120,6 +120,14 @@ class Settings:
             return self.num_side_suits
         else:
             assert False
+
+    def get_card_idx(self, card: Card) -> int:
+        return self.get_suit_idx(card.suit) * self.side_suit_length + (card.rank - 1)
+
+    def get_card(self, card_idx: int) -> Card:
+        suit = self.get_suit(card_idx // self.side_suit_length)
+        rank = (card_idx % self.side_suit_length) + 1
+        return Card(rank, suit)
 
     def get_suit(self, suit_idx):
         if suit_idx < self.num_side_suits:

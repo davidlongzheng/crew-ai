@@ -44,6 +44,7 @@ interface CardProps {
   card: { rank: number; suit: number; is_trump: boolean };
   isPlayable?: boolean;
   onClick?: () => void;
+  isAnimating?: boolean;
 }
 
 interface GameAreaProps {
@@ -55,6 +56,8 @@ interface GameAreaProps {
   activeCards: [{ rank: number; suit: number; is_trump: boolean }, number][];
   currentPlayerIdx: number;
   onDraft: (action: Action) => void;
+  trickWinner: number | null;
+  isCurrentTurn: boolean;
 }
 
 interface ActionHistoryProps {
@@ -143,7 +146,7 @@ const PlayerInfo = ({
   );
 };
 
-const Card = ({ card, isPlayable, onClick }: CardProps) => {
+const Card = ({ card, isPlayable, onClick, isAnimating }: CardProps) => {
   const suitColor = SUIT_COLORS[card.suit as keyof typeof SUIT_COLORS];
 
   return (
@@ -159,7 +162,8 @@ const Card = ({ card, isPlayable, onClick }: CardProps) => {
           card.is_trump
             ? "border-[#f1c40f] hover:border-[#f39c12]"
             : "border-white hover:border-[#ecf0f1]"
-        }`}
+        }
+        ${isAnimating ? "animate-card-play" : ""}`}
     >
       <div className="flex flex-col items-center">
         <span className="text-lg font-['Press_Start_2P'] text-white">
@@ -179,14 +183,18 @@ const GameArea = ({
   activeCards,
   currentPlayerIdx,
   onDraft,
+  trickWinner,
+  isCurrentTurn,
 }: GameAreaProps) => {
   if (phase === "draft") {
     return (
       <div className="flex flex-col items-center gap-4 h-full justify-center">
         {unassignedTasks.map((taskIdx) => {
-          const isDraftable = validActions?.some(
-            (action) => action.type === "draft" && action.task_idx === taskIdx
-          );
+          const isDraftable =
+            isCurrentTurn &&
+            validActions?.some(
+              (action) => action.type === "draft" && action.task_idx === taskIdx
+            );
 
           return (
             <div
@@ -204,7 +212,7 @@ const GameArea = ({
                 ${
                   isDraftable
                     ? "border-[#3498db] hover:border-[#2980b9] cursor-pointer transform hover:scale-105 active:scale-95"
-                    : "border-white"
+                    : "border-white opacity-50"
                 }`}
             >
               <div className="text-xs font-['Press_Start_2P'] text-white">
@@ -253,6 +261,8 @@ const GameArea = ({
               : "",
         };
 
+        const isAnimating = trickWinner === playerIdx;
+
         return (
           <div
             key={idx}
@@ -265,7 +275,8 @@ const GameArea = ({
                 card.is_trump
                   ? "border-[#f1c40f] shadow-[0_0_8px_rgba(241,196,15,0.5)]"
                   : "border-white shadow-[0_0_8px_rgba(255,255,255,0.2)]"
-              }`}
+              }
+              ${isAnimating ? "animate-trick-win" : "animate-card-play"}`}
           >
             <div className="flex flex-col items-center">
               <span className="text-lg font-['Press_Start_2P'] text-white">
@@ -346,6 +357,40 @@ const getPlayerPosition = (
   }
 };
 
+// Add to the top of the file, after imports:
+const styles = `
+@keyframes card-play {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes trick-win {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.1);
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.animate-card-play {
+  animation: card-play 1s ease-out;
+}
+
+.animate-trick-win {
+  animation: trick-win 1s ease-out;
+}
+`;
+
 // Main component
 export function PlayStage({
   gameState,
@@ -367,6 +412,7 @@ export function PlayStage({
 
   return (
     <div className="min-h-screen bg-[#2c3e50] relative overflow-hidden">
+      <style>{styles}</style>
       <div className="absolute inset-0 bg-[url('/pixel-pattern.svg')] opacity-10"></div>
 
       <div className="max-w-7xl mx-auto h-[calc(100vh-2rem)] grid grid-cols-[1fr_300px] gap-4 relative z-10 mt-4">
@@ -448,6 +494,8 @@ export function PlayStage({
                 activeCards={gameState.engine_state!.active_cards}
                 currentPlayerIdx={currentPlayerIdx}
                 onDraft={handleMove}
+                trickWinner={gameState.engine_state!.trick_winner ?? null}
+                isCurrentTurn={gameState.cur_uid === uid}
               />
             </div>
           </div>

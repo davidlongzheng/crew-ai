@@ -23,7 +23,7 @@ class AI:
             "state": None,
         }
 
-    def record_move(self, engine: Engine, action: Action, ai_state):
+    def record_move(self, engine: Engine, action: Action, ai_state: dict):
         player_idx = engine.state.get_player_idx()
         turn = engine.state.get_turn()
         ai_state["public_history"] = {
@@ -35,7 +35,7 @@ class AI:
             "task_idxs": encode_tasks(engine.state),
         }
 
-    def get_move(self, engine, ai_state):
+    def get_pv(self, engine: Engine, ai_state: dict):
         player_idx = engine.state.get_player_idx()
         turn = engine.state.get_turn()
         private_inputs = {
@@ -58,15 +58,26 @@ class AI:
             engine.settings,
             non_feature_dims=0,
         )
+        # Add batch dim
         inps = inps.unsqueeze(0)
         self.pv_model.set_state(ai_state["state"])
         with torch.no_grad():
-            log_probs, _, _ = self.pv_model(inps)
+            log_probs, value, _ = self.pv_model(inps)
         ai_state["state"] = self.pv_model.get_state()
-        action_idx = int(np.argmax(log_probs.numpy()[0]))
+
+        probs = np.exp(log_probs.numpy()[0, : len(valid_actions)])
+
+        return valid_actions, probs, value
+
+    def get_move(self, engine: Engine, ai_state: dict):
+        valid_actions, probs, _ = self.get_pv(engine, ai_state)
+        action_idx = int(np.argmax(probs))
         action = valid_actions[action_idx]
 
         return action
+
+    def get_move_uct(self, engine: Engine, ai_state: dict):
+        return
 
 
 @cache
