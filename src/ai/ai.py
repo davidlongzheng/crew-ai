@@ -76,8 +76,11 @@ class AI:
 
         return action
 
-    def get_move_uct(self, engine: Engine, ai_state: dict):
-        return
+    def get_move_tree_search(self, engine: Engine, ai_state: dict):
+        from ai.tree_search import uct_search
+
+        action = uct_search(engine, self, ai_state)
+        return action
 
 
 @cache

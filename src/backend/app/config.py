@@ -17,7 +17,10 @@ from pydantic_settings import (
 
 
 class CORSConfig(BaseSettings):
-    allow_origins: list[str] = ["http://localhost:3000"]  # Frontend URL
+    allow_origins: list[str] = [
+        "http://localhost:3000",
+        "https://crew-fp9lxyok2-davidlongzhengs-projects.vercel.app/",
+    ]  # Frontend URL
     allow_methods: list[str] = ["*"]
     allow_headers: list[str] = ["*"]
 

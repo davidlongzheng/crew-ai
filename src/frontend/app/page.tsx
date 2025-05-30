@@ -8,9 +8,12 @@ export default function Home() {
   const handleCreateRoom = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch("http://localhost:8000/game/create_room", {
-        method: "POST",
-      });
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/game/create_room`,
+        {
+          method: "POST",
+        }
+      );
       const data = await response.json();
       window.location.href = `/game/${data.room_id}`;
     } catch (error) {

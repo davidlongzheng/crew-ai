@@ -195,7 +195,7 @@ function processMessage(
 const GamePage = ({ uid, roomId }: GamePageProps) => {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket(
-    `ws://localhost:8000/game/ws/${roomId}?uid=${uid}`
+    `${process.env.NEXT_PUBLIC_API_WS_URL}/game/ws/${roomId}?uid=${uid}`
   );
   const messageQueue = useRef<Queue<ServerMessage>>(new Queue());
   const gameStateRef = useRef(gameState);
