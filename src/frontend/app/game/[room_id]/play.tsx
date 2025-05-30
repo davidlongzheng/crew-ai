@@ -33,7 +33,6 @@ interface GameStatusProps {
 }
 
 interface PlayerInfoProps {
-  position: PlayerPosition;
   handle: string;
   isCaptain: boolean;
   isCurrentTurn: boolean;
@@ -95,7 +94,6 @@ const GameStatus = ({ phase, trick, isCurrentTurn }: GameStatusProps) => (
 );
 
 const PlayerInfo = ({
-  position,
   handle,
   isCaptain,
   isCurrentTurn,
@@ -473,7 +471,6 @@ export function PlayStage({
                   }`}
                 >
                   <PlayerInfo
-                    position={position}
                     handle={gameState.handles[idx]}
                     isCaptain={gameState.engine_state!.captain === playerIdx}
                     isCurrentTurn={isCurrentTurn}

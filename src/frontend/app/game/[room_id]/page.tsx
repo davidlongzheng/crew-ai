@@ -9,15 +9,6 @@ import { LobbyStage } from "./lobby";
 import { PlayStage } from "./play";
 
 // Types
-interface MessageProcessorProps {
-  roomId: string;
-  message: ServerMessage;
-  gameState: GameState | null;
-  messageQueue: Queue<ServerMessage>;
-  setGameState: Dispatch<SetStateAction<GameState | null>>;
-  sendJsonMessage: (message: ClientMessage) => void;
-}
-
 interface GamePageProps {
   uid: string;
   roomId: string;
@@ -66,156 +57,139 @@ const ErrorScreen = ({
 );
 
 // Custom hook for message processing
-const useMessageProcessor = (
-  roomId: string,
+function processMessage(
+  message: ServerMessage,
   gameState: GameState | null,
   setGameState: Dispatch<SetStateAction<GameState | null>>,
-  sendJsonMessage: (message: ClientMessage) => void
-) => {
-  const messageQueue = useRef<Queue<ServerMessage>>(new Queue());
-  const gameStateRef = useRef(gameState);
-
-  useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
-
-  const processMessage = ({
-    roomId,
-    message,
-    gameState,
-    messageQueue,
-    setGameState,
-    sendJsonMessage,
-  }: MessageProcessorProps) => {
-    // Handle sequence numbers
-    if ("seqnum" in message) {
-      if (gameState) {
-        if (gameState.seqnum >= message.seqnum!) {
-          return;
-        }
-        if (message.seqnum !== gameState.seqnum + 1) {
-          console.log(message, gameState.seqnum);
-          alert("Oops something went wrong. Please refresh the page.");
-          return;
-        }
-      } else if (message.type !== "full_state") {
-        messageQueue.enqueue(message);
+  sendJsonMessage: (message: ClientMessage) => void,
+  roomId: string,
+  messageQueue: Queue<ServerMessage>
+) {
+  // Handle sequence numbers
+  if ("seqnum" in message) {
+    if (gameState) {
+      if (gameState.seqnum >= message.seqnum!) {
         return;
       }
+      if (message.seqnum !== gameState.seqnum + 1) {
+        alert("Oops something went wrong. Please refresh the page.");
+        return;
+      }
+    } else if (message.type !== "full_state") {
+      messageQueue.enqueue(message);
+      return;
     }
+  }
 
-    switch (message.type) {
-      case "connect_ack":
-        sendJsonMessage({ type: "full_sync", room_id: roomId });
-        break;
+  switch (message.type) {
+    case "connect_ack":
+      sendJsonMessage({ type: "full_sync", room_id: roomId });
+      break;
 
-      case "full_state":
-        setGameState({
+    case "full_state":
+      setGameState({
+        seqnum: message.seqnum!,
+        stage: message.stage!,
+        player_uids: message.player_uids!,
+        handles: message.handles!,
+        players: message.players!,
+        cur_uid: message.cur_uid ?? null,
+        engine_state: message.engine_state ?? null,
+        valid_actions: message.valid_actions ?? null,
+        tasks: message.tasks ?? null,
+        num_players: message.num_players!,
+        difficulty: message.difficulty!,
+      });
+      break;
+
+    case "settings_updated":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
           seqnum: message.seqnum!,
-          stage: message.stage!,
-          player_uids: message.player_uids!,
-          handles: message.handles!,
+          num_players: message.num_players ?? prev.num_players,
+          difficulty: message.difficulty ?? prev.difficulty,
+        };
+      });
+      break;
+
+    case "joined_game":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          seqnum: message.seqnum!,
+          player_uids: [...prev.player_uids, message.uid!],
+          handles: [...prev.handles, message.handle!],
+        };
+      });
+      break;
+
+    case "started_game":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          seqnum: message.seqnum!,
+          stage: "play",
           players: message.players!,
+          cur_uid: message.cur_uid!,
+          engine_state: message.engine_state!,
+          valid_actions: message.valid_actions!,
+          tasks: message.tasks!,
+        };
+      });
+      break;
+
+    case "moved":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          seqnum: message.seqnum!,
           cur_uid: message.cur_uid ?? null,
-          engine_state: message.engine_state ?? null,
+          engine_state: message.engine_state!,
           valid_actions: message.valid_actions ?? null,
-          tasks: message.tasks ?? null,
-          num_players: message.num_players!,
-          difficulty: message.difficulty!,
-        });
-        break;
+        };
+      });
+      break;
 
-      case "settings_updated":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-            num_players: message.num_players ?? prev.num_players,
-            difficulty: message.difficulty ?? prev.difficulty,
-          };
-        });
-        break;
+    case "trick_won":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          seqnum: message.seqnum!,
+        };
+      });
+      break;
 
-      case "joined_game":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-            player_uids: [...prev.player_uids, message.uid!],
-            handles: [...prev.handles, message.handle!],
-          };
-        });
-        break;
+    case "kicked_player":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          seqnum: message.seqnum!,
+          handles: prev.handles.filter((h) => h !== message.handle),
+          player_uids: prev.player_uids.filter((uid) => uid !== message.uid),
+        };
+      });
+      break;
 
-      case "started_game":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-            stage: "play",
-            players: message.players!,
-            cur_uid: message.cur_uid!,
-            engine_state: message.engine_state!,
-            valid_actions: message.valid_actions!,
-            tasks: message.tasks!,
-          };
-        });
-        break;
-
-      case "moved":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-            cur_uid: message.cur_uid ?? null,
-            engine_state: message.engine_state!,
-            valid_actions: message.valid_actions ?? null,
-          };
-        });
-        break;
-
-      case "trick_won":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-          };
-        });
-        break;
-
-      case "kicked_player":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-            handles: prev.handles.filter((h) => h !== message.handle),
-            player_uids: prev.player_uids.filter((uid) => uid !== message.uid),
-          };
-        });
-        break;
-
-      case "ended_game":
-        setGameState((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            seqnum: message.seqnum!,
-            stage: "lobby",
-            players: [],
-          };
-        });
-        break;
-    }
-  };
-
-  return { messageQueue, processMessage };
-};
+    case "ended_game":
+      setGameState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          seqnum: message.seqnum!,
+          stage: "lobby",
+          players: [],
+        };
+      });
+      break;
+  }
+}
 
 // Main component
 const GamePage = ({ uid, roomId }: GamePageProps) => {
@@ -223,39 +197,38 @@ const GamePage = ({ uid, roomId }: GamePageProps) => {
   const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket(
     `ws://localhost:8000/game/ws/${roomId}?uid=${uid}`
   );
+  const messageQueue = useRef<Queue<ServerMessage>>(new Queue());
+  const gameStateRef = useRef(gameState);
 
-  const { messageQueue, processMessage } = useMessageProcessor(
-    roomId,
-    gameState,
-    setGameState,
-    sendJsonMessage
-  );
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   useEffect(() => {
     if (!lastJsonMessage || !roomId) return;
 
     const message = lastJsonMessage as ServerMessage;
-    processMessage({
-      roomId,
+    processMessage(
       message,
-      gameState,
-      messageQueue: messageQueue.current,
+      gameStateRef.current,
       setGameState,
       sendJsonMessage,
-    });
+      roomId,
+      messageQueue.current
+    );
 
     // Process any queued messages after gameState is set
-    while (gameState && messageQueue.current.size() > 0) {
-      processMessage({
-        roomId,
-        message: messageQueue.current.dequeue()!,
-        gameState,
-        messageQueue: messageQueue.current,
+    while (gameStateRef.current && messageQueue.current.size() > 0) {
+      processMessage(
+        messageQueue.current.dequeue()!,
+        gameStateRef.current,
         setGameState,
         sendJsonMessage,
-      });
+        roomId,
+        messageQueue.current
+      );
     }
-  }, [roomId, lastJsonMessage, sendJsonMessage, gameState, processMessage]);
+  }, [roomId, lastJsonMessage, sendJsonMessage]);
 
   if (readyState === ReadyState.CLOSED) {
     return (
