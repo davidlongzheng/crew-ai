@@ -63,6 +63,7 @@ class AI:
         self.pv_model.set_state(ai_state["state"])
         with torch.no_grad():
             log_probs, value, _ = self.pv_model(inps)
+        value = value.item()
         ai_state["state"] = self.pv_model.get_state()
 
         probs = np.exp(log_probs.numpy()[0, : len(valid_actions)])
@@ -79,7 +80,8 @@ class AI:
     def get_move_tree_search(self, engine: Engine, ai_state: dict):
         from ai.tree_search import uct_search
 
-        action = uct_search(engine, self, ai_state)
+        action, _ = uct_search(engine, self, ai_state, num_simulations=200)
+
         return action
 
 

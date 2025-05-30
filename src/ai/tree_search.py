@@ -287,10 +287,9 @@ def uct_search(
     c_puct_base: float = 19652,
     c_puct_init: float = 1.25,
     num_simulations: int = 200,
+    skip_thresh: float = 0.9,
     root_noise: bool = False,
-    warm_up: bool = False,
-    deterministic: bool = False,
-) -> Action:
+) -> tuple[Action, Node]:
     """Single-threaded Upper Confidence Bound (UCB) for Trees (UCT) search without any rollout.
 
     This implementation uses tree parallel search and batched evaluation.
@@ -320,9 +319,6 @@ def uct_search(
         num_parallel: Number of parallel leaves for MCTS search. This is also the batch size for neural network evaluation.
         root_noise: whether add dirichlet noise to root node to encourage exploration,
             default off.
-        warm_up: if true, use temperature 1.0 to generate play policy, other wise use 0.1, default off.
-        deterministic: after the MCTS search, choose the child node with most visits number to play in the game,
-            instead of sample through a probability distribution, default off.
 
 
     Returns:
@@ -349,6 +345,11 @@ def uct_search(
         parent=DummyNode(),
     )
     _, prior_prob, value = ai.get_pv(engine, ai_state)
+    if np.max(prior_prob) >= skip_thresh:
+        move = int(np.argmax(prior_prob))
+        action = root_node.valid_actions[move]
+        return action, root_node
+
     expand(root_node, prior_prob)
     backup(root_node, value)
 
@@ -388,7 +389,8 @@ def uct_search(
             actions.append(action)
             # Make move on the simulation environment.
             cum_reward += engine.move(action)
-            ai.record_move(engine, action, sim_ai_state)
+            if engine.state.phase != "end":
+                ai.record_move(engine, action, sim_ai_state)
 
             while (
                 engine.state.cur_player != orig_player and engine.state.phase != "end"
@@ -397,7 +399,8 @@ def uct_search(
                 action = valid_actions[int(np.argmax(probs))]
                 actions.append(action)
                 cum_reward += engine.move(action)
-                ai.record_move(engine, action, sim_ai_state)
+                if engine.state.phase != "end":
+                    ai.record_move(engine, action, sim_ai_state)
 
             actions_tuple = tuple(actions)
             if actions_tuple not in node.children:
@@ -407,6 +410,7 @@ def uct_search(
                 node.children[actions_tuple] = Node(
                     valid_actions=valid_actions, move=move, parent=node
                 )
+            node = node.children[actions_tuple]
 
         # Special case - If game is over, using the actual reward from the game to update statistics.
         if engine.state.phase == "end":
@@ -423,16 +427,10 @@ def uct_search(
         # Phase 3 - Backup statistics
         backup(node, cum_reward + value)
 
-    # Play - generate search policy action probability from the root node's child visit number.
-    search_pi = generate_search_policy(root_node.child_N, 1.0 if warm_up else 0.1)
-
-    if deterministic:
-        # Choose the child with most visit count.
-        move = int(np.argmax(root_node.child_N))
-    else:
-        move = int(np.random.choice(np.arange(search_pi.shape[0]), p=search_pi))
+    # Choose the child with most visit count.
+    move = int(np.argmax(root_node.child_N))
     action = root_node.valid_actions[move]
 
     engine.state = orig_state
 
-    return action
+    return action, root_node
