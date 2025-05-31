@@ -1,5 +1,7 @@
 from __future__ import absolute_import, annotations
 
+import random
+
 import cpp_game
 from game.settings import Settings
 from game.state import State
@@ -8,7 +10,11 @@ from game.types import TRUMP_SUIT_NUM, Action, Card, Event, Phase, Signal, Signa
 from game.utils import split_by_suit
 
 
-def rng_shuffle(li, rng: cpp_game.Rng):
+def rng_shuffle(li, rng: cpp_game.Rng | random.Random):
+    if isinstance(rng, random.Random):
+        random.shuffle(li)
+        return li
+
     idxs = rng.shuffle_idxs(len(li))
     return [li[idx] for idx in idxs]
 
@@ -24,14 +30,13 @@ class Engine:
     """
 
     def __init__(
-        self,
-        settings: Settings,
-        seed: int | None = None,
+        self, settings: Settings, seed: int | None = None, use_py_rng: bool = False
     ) -> None:
         self.settings = settings
+        self.use_py_rng = use_py_rng
         self.reset_state(seed=seed)
 
-    def gen_hands(self, rng: cpp_game.Rng) -> list[list[Card]]:
+    def gen_hands(self, rng: cpp_game.Rng | random.Random) -> list[list[Card]]:
         deck = [
             Card(rank, suit)
             for suit in self.settings.get_suits()
@@ -49,7 +54,7 @@ class Engine:
 
         return hands
 
-    def gen_tasks(self, rng: cpp_game.Rng) -> tuple[list[int], int]:
+    def gen_tasks(self, rng: cpp_game.Rng | random.Random) -> tuple[list[int], int]:
         if self.settings.task_idxs:
             task_idxs = list(self.settings.task_idxs)
             difficulty = sum(
@@ -66,15 +71,26 @@ class Engine:
                     self.settings.min_difficulty, self.settings.max_difficulty
                 )
             else:
-                difficulty = rng.choice(
-                    list(
-                        range(
-                            self.settings.min_difficulty,
-                            self.settings.max_difficulty + 1,
-                        )
-                    ),
-                    self.settings.difficulty_distro,
-                )
+                if isinstance(rng, random.Random):
+                    difficulty = rng.choices(
+                        list(
+                            range(
+                                self.settings.min_difficulty,
+                                self.settings.max_difficulty + 1,
+                            )
+                        ),
+                        self.settings.difficulty_distro,
+                    )[0]
+                else:
+                    difficulty = rng.choice(
+                        list(
+                            range(
+                                self.settings.min_difficulty,
+                                self.settings.max_difficulty + 1,
+                            )
+                        ),
+                        self.settings.difficulty_distro,
+                    )
             while True:
                 task_idxs = []
                 cur_difficulty = 0
@@ -140,7 +156,7 @@ class Engine:
         return assigned_tasks
 
     def reset_state(self, seed: int | None = None) -> None:
-        rng = cpp_game.Rng(seed)
+        rng = random.Random(seed) if self.use_py_rng else cpp_game.Rng(seed)
         hands = self.gen_hands(rng)
         leader = [
             Card(

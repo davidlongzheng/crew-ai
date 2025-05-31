@@ -4,6 +4,7 @@ import time
 from fastapi import WebSocket
 from loguru import logger
 
+from ai.ai import AI, get_ai, supports_ai
 from backend.app.schemas.game import (
     AddAi,
     ClientMessage,
@@ -25,7 +26,6 @@ from backend.app.schemas.game import (
     StartGame,
     TrickWon,
 )
-from ai.ai import AI, get_ai
 from game.engine import Engine
 from game.settings import Settings
 from game.tasks import Task
@@ -136,6 +136,10 @@ class GameRoom:
             logger.error("Trying to add ai but too many players.")
             return None
 
+        if not supports_ai():
+            logger.error("Do not support AI.")
+            return None
+
         i = 0
         while True:
             if f"ai_{i}" not in self.player_uids:
@@ -218,7 +222,7 @@ class GameRoom:
         else:
             self.ai = None
             self.ai_state = None
-        self.engine = Engine(self.settings)
+        self.engine = Engine(self.settings, use_py_rng=True)
         self.engine.reset_state()
         self.players = list(range(self.settings.num_players))
         random.shuffle(self.players)

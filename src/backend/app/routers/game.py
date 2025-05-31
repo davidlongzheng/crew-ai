@@ -18,9 +18,7 @@ from backend.app.services.game import GameRoom
 router = APIRouter(prefix="/game")
 
 # Store active game rooms
-game_rooms: dict[str, GameRoom] = {
-    "myroomid": GameRoom("myroomid"),
-}
+game_rooms: dict[str, GameRoom] = {}
 
 
 @router.post("/create_room")

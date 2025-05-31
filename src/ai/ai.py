@@ -106,3 +106,7 @@ def get_ai(settings: Settings) -> AI:
         )
     else:
         raise ValueError(f"Unsupported settings for AI: {settings}")
+
+
+def supports_ai():
+    return Path("/Users/davidzheng/projects/crew-ai/outdirs/0522/run_0").exists()
