@@ -11,7 +11,6 @@ from lib.utils import coerce_string
 @dataclass(frozen=True, kw_only=True)
 class Hyperparams:
     float_dtype: torch.dtype = torch.float32
-    use_mixed_precision: bool = False
     # Use torch.profile
     use_profile: bool = False
     # Profile memory at key points.
@@ -25,7 +24,7 @@ class Hyperparams:
     num_train_rollouts_per_round: int = 32768
     num_val_rollouts_per_round: int = 1024
     # Number of trajectories in a batch.
-    batch_size: int = 160
+    batch_size: int = 320
     lr: float = 0.000624
     lr_schedule: str = "constant"
     lr_min_frac: float = 0.8
@@ -96,6 +95,9 @@ class Hyperparams:
     policy_query_dim: int = 80  # Attention vector on policy output.
     policy_signal_prior: str = "lin"
     policy_phase_branch: bool = True
+
+    num_private_rounds: int = 10
+    private_lr: float = 1e-4
 
 
 class HyperparamsType(click.ParamType):

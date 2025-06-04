@@ -60,7 +60,7 @@ class Curriculum:
         n_uncleared = state["max_difficulty"] - state["min_target_difficulty"] + 1
         uncleared_prob = (1.0 - sum(difficulty_distro)) / n_uncleared
         difficulty_distro += [uncleared_prob] * n_uncleared
-        state["difficulty_distro"] = difficulty_distro
+        state["difficulty_distro"] = tuple(difficulty_distro)
 
         return replace(
             settings,

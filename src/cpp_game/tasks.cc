@@ -71,14 +71,17 @@ void CumTrickCond::on_trick_end(const State &state)
     {
         if ((direction == Direction::kGreaterThanOrEqual || direction == Direction::kGreaterThan) && comp_ok)
         {
+            assert(status == Status::kUnresolved || status == Status::kSuccess);
             status = Status::kSuccess;
         }
         else if ((direction == Direction::kLessThan || direction == Direction::kLessThanOrEqual) && !comp_ok)
         {
+            assert(status == Status::kUnresolved || status == Status::kFail);
             status = Status::kFail;
         }
         else if (direction == Direction::kEqual && num_tricks_won > num_other_tricks)
         {
+            assert(status == Status::kUnresolved || status == Status::kFail);
             status = Status::kFail;
         }
     }
@@ -134,14 +137,17 @@ void CumCardCond::on_trick_end(const State &state)
     {
         if ((direction == Direction::kGreaterThanOrEqual || direction == Direction::kGreaterThan) && comp_ok)
         {
+            assert(status == Status::kUnresolved || status == Status::kSuccess);
             status = Status::kSuccess;
         }
         else if ((direction == Direction::kLessThan || direction == Direction::kLessThanOrEqual) && !comp_ok)
         {
+            assert(status == Status::kUnresolved || status == Status::kFail);
             status = Status::kFail;
         }
         else if (direction == Direction::kEqual && num_cards_won > num_other_cards)
         {
+            assert(status == Status::kUnresolved || status == Status::kFail);
             status = Status::kFail;
         }
     }
@@ -213,7 +219,7 @@ void SweepCond::on_trick_end(const State &state)
         int num_sweeps_ = 0;
         for (const auto &count : cards_won_per_suit)
         {
-            if (count == settings.side_suit_length)
+            if (count == settings->side_suit_length)
             {
                 num_sweeps_++;
             }
@@ -261,7 +267,7 @@ void ConsecCond::on_trick_end(const State &state)
         }
         else
         {
-            partial_value = static_cast<double>(state.trick + 1) / static_cast<double>(settings.num_tricks);
+            partial_value = static_cast<double>(state.trick + 1) / static_cast<double>(settings->num_tricks);
         }
     }
     else
@@ -536,7 +542,10 @@ void AssignedTask::on_trick_end(const State &state)
 
         if (any_fail)
         {
-            assert(status == Status::kUnresolved || status == Status::kFail);
+            if (status != Status::kUnresolved && status != Status::kFail)
+            {
+                throw std::runtime_error("Invalid task status: " + std::to_string(static_cast<int>(status)));
+            }
             status = Status::kFail;
         }
     }

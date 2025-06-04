@@ -155,16 +155,6 @@ function processMessage(
       });
       break;
 
-    case "trick_won":
-      setGameState((prev) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          seqnum: message.seqnum!,
-        };
-      });
-      break;
-
     case "kicked_player":
       setGameState((prev) => {
         if (!prev) return null;

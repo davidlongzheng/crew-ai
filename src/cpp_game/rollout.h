@@ -33,8 +33,6 @@ struct MoveInputs
 
     // Action tensors
     py::array_t<int8_t> valid_actions;
-
-    bool is_done = false;
 };
 
 struct RolloutResults
@@ -80,7 +78,6 @@ struct Rollout
     void reset_state(int engine_seed);
     void record_move_inputs();
     void move(int action_idx);
-    void pop_last_history();
     // state
     const Settings &settings;
     std::unique_ptr<Engine> engine;
@@ -119,12 +116,12 @@ struct Rollout
     std::vector<int8_t> aux_info;
 
     // Helper functions
-    void add_tasks(std::vector<int8_t> &vec);
+    static void add_tasks(std::vector<int8_t> &vec, const Settings &settings, const State &state);
     void encode_aux_info();
-    int add_card(std::vector<int8_t> &vec, int i, const Card &card);
-    int add_action(std::vector<int8_t> &vec, int i, const Action &action);
-    void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand);
-    void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions);
+    static int add_card(std::vector<int8_t> &vec, int i, const Card &card, const Settings &settings);
+    static int add_action(std::vector<int8_t> &vec, int i, const Action &action, const Settings &settings);
+    static void add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand, const Settings &settings);
+    static void add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions, const Settings &settings);
     void add_log_probs(const py::array_t<float> &log_probs);
 };
 
@@ -134,7 +131,7 @@ struct BatchRollout
     void reset_state(const std::vector<int> &engine_seeds);
 
     const MoveInputs &get_move_inputs();
-    const MoveInputs &move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs);
+    void move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs);
     bool is_done() const;
     const RolloutResults &get_results();
 

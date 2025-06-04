@@ -6,6 +6,7 @@
 #include <string_view>
 #include <cassert>
 #include <stdexcept>
+#include <functional>
 
 // Constants
 constexpr int TRUMP_SUIT_NUM = 4;
@@ -47,6 +48,20 @@ struct Card
         return !(*this == other);
     }
 };
+
+namespace std
+{
+    template <>
+    struct hash<Card>
+    {
+        std::size_t operator()(const Card &c) const noexcept
+        {
+            std::size_t h1 = std::hash<int>{}(c.suit);
+            std::size_t h2 = std::hash<int>{}(c.rank);
+            return h1 ^ (h2 << 1); // Combine using XOR and bit shift
+        }
+    };
+}
 
 // Action types
 enum class ActionType

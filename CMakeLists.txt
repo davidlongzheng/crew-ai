@@ -32,6 +32,7 @@ set(SOURCES
     src/cpp_game/tasks.cc
     src/cpp_game/rollout.cc
     src/cpp_game/thread_pool.cc
+    src/cpp_game/tree_search.cc
 )
 
 # Add header files
@@ -45,6 +46,8 @@ set(HEADERS
     src/cpp_game/rollout.h
     src/cpp_game/thread_pool.h
     src/cpp_game/lockfree_pool.h
+    src/cpp_game/tree_search.h
+    src/cpp_game/featurizer.h
 )
 
 # Add the C++ library called "game"

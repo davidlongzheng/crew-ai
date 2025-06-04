@@ -11,7 +11,7 @@ import numpy as np
 from game.types import TRUMP_SUIT_NUM, Card
 from lib.utils import coerce_string
 
-DEFAULT_PRESET = "all"
+DEFAULT_PRESET = "all_ns"
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class Settings:
     cheating_signal: bool = False
     single_signal: bool = False
 
-    bank: str = "easy"
+    bank: str = "all"
     # In fixed, tasks are distributed according to the order of tasks,
     # starting from the leader.
     # In shuffle, tasks are shuffled and distributed clockwise starting
@@ -33,12 +33,12 @@ class Settings:
     # In random, each task is given to a random player.
     task_distro: Literal["fixed", "shuffle", "random"] = "shuffle"
     task_idxs: tuple[int, ...] = field(default_factory=tuple)
-    min_difficulty: int | None = None
-    max_difficulty: int | None = None
-    difficulty_distro: list[float] | None = None
-    max_num_tasks: int | None = None
+    min_difficulty: int | None = 4
+    max_difficulty: int | None = 17
+    difficulty_distro: tuple[float, ...] | None = None
+    max_num_tasks: int | None = 8
 
-    use_drafting: bool = False
+    use_drafting: bool = True
     num_draft_tricks: int = 3
 
     # Task bonus is how much of a bonus you get for a fully completed task
@@ -235,36 +235,19 @@ class Settings:
 
 
 def get_preset(preset):
-    if preset == "easy_p3":
+    if preset == "easy":
         return Settings(
-            num_players=3,
-            side_suit_length=4,
-            trump_suit_length=2,
-            single_signal=True,
-            task_idxs=(0, 1, 2),
-        )
-    elif preset == "easy_p4":
-        return Settings(
-            single_signal=True,
+            bank="easy",
+            use_signals=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
+            use_drafting=False,
             task_idxs=(0, 0, 1, 2),
         )
-    elif preset == "med":
+    elif preset == "all_ns":
         return Settings(
-            bank="med",
-            min_difficulty=4,
-            max_difficulty=7,
-            max_num_tasks=4,
             use_signals=False,
-            use_drafting=True,
-        )
-    elif preset == "all":
-        return Settings(
-            bank="all",
-            min_difficulty=4,
-            max_difficulty=17,
-            max_num_tasks=8,
-            use_signals=False,
-            use_drafting=True,
         )
     else:
         raise ValueError(preset)

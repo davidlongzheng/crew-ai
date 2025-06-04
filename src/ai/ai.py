@@ -5,108 +5,170 @@ from typing import cast
 import numpy as np
 import torch
 
-from ai.featurizer import featurize
+import cpp_game
+from ai.featurizer import featurize_cpp
 from ai.models import load_model_for_eval
-from game.engine import Engine
+from ai.tree_search import TreeSearchSettings
+from ai.utils import get_lstm_state, set_lstm_state
 from game.settings import Settings
-from game.types import Action
-from game.utils import encode_action, encode_hand, encode_tasks
 
 
 class AI:
-    def __init__(self, path: Path):
-        self.pv_model, _ = load_model_for_eval(path)
+    def __init__(
+        self,
+        path: Path,
+        ts_settings: TreeSearchSettings | None = None,
+        num_rollouts: int = 1,
+    ):
+        self.pv_model, self.settings = load_model_for_eval(path)
+        cpp_settings = self.settings.to_cpp()
+        self.num_rollouts = num_rollouts
+        self.featurizer = cpp_game.Featurizer(cpp_settings, num_rollouts)
+        self.ts_settings = ts_settings or TreeSearchSettings()
+        self.tree_search = cpp_game.TreeSearch(
+            self.settings.to_cpp(),
+            num_rollouts=num_rollouts,
+            c_puct_base=self.ts_settings.c_puct_base,
+            c_puct_init=self.ts_settings.c_puct_init,
+            num_parallel=self.ts_settings.num_parallel,
+            root_noise=self.ts_settings.root_noise,
+            all_noise=self.ts_settings.all_noise,
+            cheating=self.ts_settings.cheating,
+            noise_eps=self.ts_settings.noise_eps,
+            noise_alpha=self.ts_settings.noise_alpha,
+            seed=self.ts_settings.seed or -1,
+        )
 
     def new_rollout(self):
         return {
-            "public_history": {},
-            "state": None,
+            "lstm_state": None,
         }
 
-    def record_move(self, engine: Engine, action: Action, ai_state: dict):
-        player_idx = engine.state.get_player_idx()
-        turn = engine.state.get_turn()
-        ai_state["public_history"] = {
-            "trick": engine.state.trick,
-            "action": encode_action(action, engine.settings),
-            "player_idx": player_idx,
-            "turn": turn,
-            "phase": engine.settings.get_phase_idx(engine.state.phase),
-            "task_idxs": encode_tasks(engine.state),
-        }
+    def get_pv(self, engines: list[cpp_game.Engine], ai_states: list[dict], timer=None):
+        assert len(engines) <= self.num_rollouts
+        assert len(engines) == len(ai_states)
+        inps = featurize_cpp(engines, self.featurizer)
+        valid_actions_li = [engine.valid_actions() for engine in engines]
+        set_lstm_state(self.pv_model, [x["lstm_state"] for x in ai_states])
 
-    def get_pv(self, engine: Engine, ai_state: dict):
-        player_idx = engine.state.get_player_idx()
-        turn = engine.state.get_turn()
-        private_inputs = {
-            "hand": encode_hand(
-                engine.state.hands[engine.state.cur_player], engine.settings
-            ),
-            "trick": engine.state.trick,
-            "player_idx": player_idx,
-            "turn": turn,
-            "phase": engine.settings.get_phase_idx(engine.state.phase),
-            "task_idxs": encode_tasks(engine.state),
-        }
-        valid_actions = engine.valid_actions()
-        valid_actions_arr = [encode_action(x, engine.settings) for x in valid_actions]
-
-        inps = featurize(
-            ai_state["public_history"],
-            private_inputs,
-            valid_actions_arr,
-            engine.settings,
-            non_feature_dims=0,
-        )
-        # Add batch dim
-        inps = inps.unsqueeze(0)
-        self.pv_model.set_state(ai_state["state"])
+        if timer:
+            timer.start("forward")
         with torch.no_grad():
-            log_probs, value, _ = self.pv_model(inps)
-        value = value.item()
-        ai_state["state"] = self.pv_model.get_state()
+            log_probs, values, _ = self.pv_model(inps)
+        if timer:
+            timer.finish("forward")
 
-        probs = np.exp(log_probs.numpy()[0, : len(valid_actions)])
+        for ai_state, lstm_state in zip(ai_states, get_lstm_state(self.pv_model)):
+            ai_state["lstm_state"] = lstm_state
 
-        return valid_actions, probs, value
+        probs = np.exp(log_probs.numpy())
+        values = values.numpy()
 
-    def get_move(self, engine: Engine, ai_state: dict):
-        valid_actions, probs, _ = self.get_pv(engine, ai_state)
-        action_idx = int(np.argmax(probs))
-        action = valid_actions[action_idx]
+        return valid_actions_li, probs, values
 
-        return action
+    def get_moves(self, engines: list[cpp_game.Engine], ai_states: list[dict]):
+        assert len(engines) <= self.num_rollouts
+        assert len(engines) == len(ai_states)
+        valid_actions_li, probs, _ = self.get_pv(engines, ai_states)
 
-    def get_move_tree_search(self, engine: Engine, ai_state: dict):
+        ret = []
+        for valid_actions, probs_i in zip(valid_actions_li, probs):
+            action_idx = int(np.argmax(probs_i))
+            try:
+                action = valid_actions[action_idx]
+            except IndexError:
+                raise ValueError(f"Invalid action index: {action_idx} {probs}")
+
+            ret.append(action)
+        return ret
+
+    def get_move(self, engine: cpp_game.Engine, ai_state: dict):
+        return self.get_moves([engine], [ai_state])[0]
+
+    def get_pv_tree_search(self, engines: list[cpp_game.Engine], ai_states: list[dict]):
+        assert len(engines) <= self.num_rollouts
+        assert len(engines) == len(ai_states)
         from ai.tree_search import uct_search
 
-        action, _ = uct_search(engine, self, ai_state, num_simulations=200)
+        valid_actions_li, probs, values = uct_search(
+            self.tree_search, self.ts_settings, engines, self, ai_states
+        )
 
-        return action
+        return valid_actions_li, probs, values
+
+    def get_moves_tree_search(
+        self, engines: list[cpp_game.Engine], ai_states: list[dict]
+    ):
+        assert len(engines) <= self.num_rollouts
+        assert len(engines) == len(ai_states)
+        valid_actions_li, probs, _ = self.get_pv_tree_search(engines, ai_states)
+
+        ret = []
+        for valid_actions, probs_i in zip(valid_actions_li, probs):
+            action_idx = int(np.argmax(probs_i))
+            try:
+                action = valid_actions[action_idx]
+            except IndexError:
+                raise ValueError(f"Invalid action index: {action_idx} {probs}")
+
+            ret.append(action)
+
+        return ret
 
 
 @cache
-def _get_ai_by_path(path) -> AI:
-    return AI(path)
+def _get_ai_by_path(
+    path, ts_settings: TreeSearchSettings | None = None, num_rollouts: int = 1
+) -> AI:
+    return AI(path, ts_settings=ts_settings, num_rollouts=num_rollouts)
 
 
 @cache
-def get_ai(settings: Settings) -> AI:
+def get_ai(
+    settings: Settings,
+    ts_settings: TreeSearchSettings | None = None,
+    num_rollouts: int = 1,
+) -> AI:
     if (
         settings.num_players == 4
         and settings.use_drafting
         and not settings.use_signals
-        and settings.bank == "med"
+        and settings.bank == "all"
         and settings.min_difficulty == settings.max_difficulty
         and (4 <= cast(int, settings.min_difficulty) <= 7)
-        and settings.max_num_tasks == 4
+        and settings.max_num_tasks == 8
     ):
-        return _get_ai_by_path(
-            Path("/Users/davidzheng/projects/crew-ai/outdirs/0522/run_0")
-        )
+        for path in [
+            Path("/Users/davidzheng/projects/crew-ai/outdirs/0525/run_7"),
+            Path("/root/outdirs/0531/run_2"),
+        ]:
+            if path.exists():
+                return _get_ai_by_path(path, ts_settings, num_rollouts)
+        raise ValueError("Paths do not exist")
     else:
         raise ValueError(f"Unsupported settings for AI: {settings}")
 
 
 def supports_ai():
-    return Path("/Users/davidzheng/projects/crew-ai/outdirs/0522/run_0").exists()
+    return Path("/Users/davidzheng/projects/crew-ai/outdirs").exists()
+
+
+def batch_rollout(engines, ai, seeds=None, use_tree_search=False):
+    assert seeds is None or len(engines) == len(seeds)
+    for i, engine in enumerate(engines):
+        engine.reset_state(seeds[i] if seeds else None)
+
+    ai_states = [ai.new_rollout() for _ in engines]
+
+    while engines[0].state.phase != cpp_game.Phase.end:
+        assert all(engine.state.phase != cpp_game.Phase.end for engine in engines)
+        if use_tree_search:
+            actions = ai.get_moves_tree_search(engines, ai_states)
+        else:
+            actions = ai.get_moves(engines, ai_states)
+        for action, engine in zip(actions, engines):
+            engine.move(action)
+
+    return np.array(
+        [engine.state.status == cpp_game.Status.success for engine in engines]
+    )

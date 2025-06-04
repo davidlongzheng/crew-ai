@@ -15,7 +15,7 @@ from ai.embedding import (
 )
 from ai.hyperparams import Hyperparams
 from ai.utils import MLP
-from game.settings import Settings
+from game.settings import Settings, get_preset
 from game.utils import get_splits_and_phases
 
 
@@ -49,9 +49,12 @@ class BranchedLSTM(nn.Module):
 
 
 class BranchedFF(nn.Module):
-    def __init__(self, make_ff: Callable[[], nn.Module], settings: Settings):
+    def __init__(
+        self, make_ff: Callable[[], nn.Module], output_dim: int, settings: Settings
+    ):
         super().__init__()
         self.ffs = nn.ModuleList([make_ff() for _ in range(settings.num_phases)])
+        self.output_dim = output_dim
         self.set_splits(settings)
 
     def set_splits(self, settings):
@@ -74,17 +77,20 @@ class BranchedFF(nn.Module):
         # phases = (N,) or (N, T)
 
         if len(phases.shape) == 1:
-            phase = phases[0].item()
-            ff = self.ffs[phase]
-            return ff(x)
+            # We need to support heterogeneous phases in the batch dim
+            # for tree search.
+            y = torch.empty(x.shape[:-1] + (self.output_dim,), device=x.device)
+            for phase in phases.unique().tolist():
+                phase_mask = phases == phase
+                y[phase_mask] = self.ffs[phase](x[phase_mask])
+            return y
 
         y_splits = []
         for phase in range(len(self.ffs)):
             x_split = x[:, self.phase_mask[phase]]
             y_splits.append(self.ffs[phase](x_split))
 
-        y_shape = x.shape[:-1] + (y_splits[0].size(-1),)
-        y = torch.empty(y_shape, device=x.device)
+        y = torch.empty(x.shape[:-1] + (self.output_dim,), device=x.device)
         for phase in range(len(self.ffs)):
             y[:, self.phase_mask[phase]] = y_splits[phase]
 
@@ -244,7 +250,7 @@ class BackboneModel(nn.Module):
             dropout=dropout,
         )
         if phase_branch:
-            self.mlp: nn.Module = BranchedFF(make_mlp, settings)
+            self.mlp: nn.Module = BranchedFF(make_mlp, output_dim, settings)
         else:
             self.mlp = make_mlp()
 
@@ -321,13 +327,15 @@ class PolicyHead(nn.Module):
             dropout=dropout,
         )
         if phase_branch:
-            self.key_model: nn.Module = BranchedFF(make_key_model, settings)
+            self.key_model: nn.Module = BranchedFF(make_key_model, query_dim, settings)
         else:
             self.key_model = make_key_model()
         self.query_dim = query_dim
         make_query_model = lambda: nn.Linear(query_input_dim, query_dim)
         if phase_branch:
-            self.query_model: nn.Module = BranchedFF(make_query_model, settings)
+            self.query_model: nn.Module = BranchedFF(
+                make_query_model, query_dim, settings
+            )
         else:
             self.query_model = make_query_model()
         self.log_softmax = nn.LogSoftmax(dim=-1)
@@ -564,9 +572,14 @@ def get_models(
 
 
 def load_model_for_eval(path: Path):
-    settings_dict = torch.load(path / "settings.pth", weights_only=False)
-    hp = settings_dict["hp"]
-    settings = settings_dict["settings"]
+    if path.name == "run_7":
+        hp = Hyperparams()
+        settings = get_preset("all_ns")
+        assert not settings.use_signals
+    else:
+        settings_dict = torch.load(path / "settings.pth", weights_only=False)
+        hp = settings_dict["hp"]
+        settings = settings_dict["settings"]
     models = get_models(hp, settings)
     pv_model = cast(PolicyValueModel, models["pv"])
     checkpoint = torch.load(

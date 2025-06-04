@@ -209,12 +209,17 @@ class ActionModel(nn.Module):
 
         if single_step:
             # x = (N, 2) or (N, A, 2)
-            x_ex = x[0, 1] if len(x.shape) == 2 else x[0, 0, 1]
-            is_draft = x_ex.item() == -1
-            if is_draft:
-                return self.task_model(x[..., 0])
-            else:
-                return self.card_model(x)
+            # We need to support heterogeneous phases in the batch dim
+            # for tree search.
+            is_draft_arr = (x[:, 1] if len(x.shape) == 2 else x[:, 0, 1]) == -1
+            y = torch.empty(x.shape[:-1] + (self.output_dim,), device=x.device)
+            for is_draft in is_draft_arr.unique().tolist():
+                mask = is_draft_arr == is_draft
+                if is_draft:
+                    y[mask] = self.task_model(x[mask, ..., 0])
+                else:
+                    y[mask] = self.card_model(x[mask])
+            return y
 
         # x = (N, T, 2) or (N, T, A, 2)
         x_ex = x[0, :, 1] if len(x.shape) == 3 else x[0, :, 0, 1]

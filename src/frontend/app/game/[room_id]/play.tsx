@@ -507,7 +507,7 @@ export function PlayStage({
                       gameState.cur_uid === uid &&
                       gameState.valid_actions?.some(
                         (action) =>
-                          action.type === "play" &&
+                          (action.type === "play" || action.type === "signal") &&
                           action.card?.rank === card.rank &&
                           action.card?.suit === card.suit
                       );
@@ -521,7 +521,7 @@ export function PlayStage({
                           if (isPlayable) {
                             const playAction = gameState.valid_actions?.find(
                               (action) =>
-                                action.type === "play" &&
+                                (action.type === "play" || action.type === "signal") &&
                                 action.card?.rank === card.rank &&
                                 action.card?.suit === card.suit
                             );

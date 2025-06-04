@@ -54,7 +54,7 @@ def assert_matching_tasks(engine, cpp_engine):
 def init_matching_engines(
     seed, task_idxs, single_signal, use_drafting, weight_by_difficulty
 ):
-    settings = get_preset("easy_p4")
+    settings = get_preset("easy")
     settings = replace(
         settings,
         bank="all",
@@ -118,13 +118,23 @@ def to_cpp_status(status):
     return getattr(cpp_game.Status, status)
 
 
+def to_cpp_last_action(last_action):
+    if last_action is None:
+        return None
+
+    last_action = list(last_action)
+    last_action[2] = to_cpp_action(last_action[2])
+    last_action = tuple(last_action)
+    return last_action
+
+
 def assert_matching_state(engine, cpp_engine):
     state = engine.state
     cpp_state = cpp_engine.state
 
     assert to_cpp_phase(state.phase), cpp_state.phase
     assert [[to_cpp_card(x) for x in hand] for hand in state.hands] == cpp_state.hands
-    assert [to_cpp_action(x) for x in state.actions] == cpp_state.actions
+    assert to_cpp_last_action(state.last_action) == cpp_state.last_action
     assert state.trick == cpp_state.trick
     assert state.leader == cpp_state.leader
     assert state.captain == cpp_state.captain

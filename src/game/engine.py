@@ -188,7 +188,7 @@ class Engine:
             num_players=self.settings.num_players,
             phase=phase,
             hands=hands,
-            actions=[],
+            last_action=None,
             trick=0,
             leader=leader,
             captain=leader,
@@ -248,7 +248,13 @@ class Engine:
             else:
                 assert len(self.state.unassigned_task_idxs) < self.num_drafts_left()
 
-            self.state.actions.append(action)
+            self.state.last_action = (
+                self.state.get_player_idx(),
+                self.state.trick,
+                action,
+                self.state.get_turn(),
+                self.settings.get_phase_idx(self.state.phase),
+            )
             self.state.history.append(
                 Event(type="action", phase=self.state.phase, action=action)
             )
@@ -308,7 +314,13 @@ class Engine:
                     action.card, value, self.state.trick
                 )
 
-            self.state.actions.append(action)
+            self.state.last_action = (
+                self.state.get_player_idx(),
+                self.state.trick,
+                action,
+                self.state.get_turn(),
+                self.settings.get_phase_idx(self.state.phase),
+            )
             self.state.history.append(
                 Event(type="action", phase=self.state.phase, action=action)
             )
@@ -328,7 +340,13 @@ class Engine:
 
             player_hand.remove(action.card)
             self.state.active_cards.append((action.card, action.player))
-            self.state.actions.append(action)
+            self.state.last_action = (
+                self.state.get_player_idx(),
+                self.state.trick,
+                action,
+                self.state.get_turn(),
+                self.settings.get_phase_idx(self.state.phase),
+            )
             self.state.history.append(
                 Event(type="action", phase=self.state.phase, action=action)
             )

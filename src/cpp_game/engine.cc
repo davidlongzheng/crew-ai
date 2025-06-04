@@ -209,7 +209,7 @@ void Engine::reset_state(std::optional<int> seed)
     state.num_players = settings.num_players;
     state.phase = phase;
     state.hands = hands;
-    state.actions = std::vector<Action>();
+    state.last_action = std::nullopt;
     state.trick = 0;
     state.leader = leader;
     state.captain = leader;
@@ -233,6 +233,13 @@ void Engine::reset_state(std::optional<int> seed)
     state.difficulty = difficulty;
     state.status = Status::kUnresolved;
     state.value = 0.0;
+
+    // Initialize shown_out as a vector of vectors of bools
+    state.shown_out = std::vector<std::vector<bool>>(settings.num_players);
+    for (auto &player_shown_out : state.shown_out)
+    {
+        player_shown_out = std::vector<bool>(settings.num_suits, false);
+    }
 }
 
 int Engine::calc_trick_winner(
@@ -294,7 +301,7 @@ double Engine::move(const Action &action)
             assert(state.unassigned_task_idxs.size() < num_drafts_left());
         }
 
-        state.actions.push_back(action);
+        state.last_action = std::make_tuple(state.get_player_idx(), state.trick, action, state.get_turn(), settings.get_phase_idx(state.phase));
         state.cur_player = state.get_next_player();
         if (state.cur_player == state.leader)
         {
@@ -371,7 +378,7 @@ double Engine::move(const Action &action)
             state.signals[state.cur_player] = Signal{action.card.value(), value, state.trick};
         }
 
-        state.actions.push_back(action);
+        state.last_action = std::make_tuple(state.get_player_idx(), state.trick, action, state.get_turn(), settings.get_phase_idx(state.phase));
         state.cur_player = state.get_next_player();
 
         if (state.cur_player == state.leader)
@@ -382,33 +389,47 @@ double Engine::move(const Action &action)
     else if (state.phase == Phase::kPlay)
     {
         assert(action.player == state.cur_player);
-        auto &player_hand = state.hands[state.cur_player];
-        assert(std::find(player_hand.begin(), player_hand.end(), action.card.value()) !=
-               player_hand.end());
         assert(action.type == ActionType::kPlay);
+        assert(!state.shown_out[state.cur_player][settings.get_suit_idx(action.card->suit)]);
 
-        if (state.cur_player != state.leader)
+        if (state.private_player >= 0 && state.private_player != state.cur_player)
         {
-            bool has_lead_suit = false;
-            for (const Card &card : player_hand)
+            assert(state.unseen_cards.contains(*action.card));
+            state.unseen_cards.erase(*action.card);
+        }
+        else
+        {
+            auto &player_hand = state.hands[state.cur_player];
+            assert(std::find(player_hand.begin(), player_hand.end(), action.card.value()) !=
+                   player_hand.end());
+
+            if (state.cur_player != state.leader)
             {
-                if (card.suit == state.lead_suit())
+                bool has_lead_suit = false;
+                for (const Card &card : player_hand)
                 {
-                    has_lead_suit = true;
-                    break;
+                    if (card.suit == state.lead_suit())
+                    {
+                        has_lead_suit = true;
+                        break;
+                    }
                 }
+
+                assert(action.card.value().suit == state.lead_suit() || !has_lead_suit);
             }
 
-            assert(action.card.value().suit == state.lead_suit() || !has_lead_suit);
+            // Remove card from hand
+            auto it = std::find(player_hand.begin(), player_hand.end(), action.card.value());
+            player_hand.erase(it);
         }
-
-        // Remove card from hand
-        auto it = std::find(player_hand.begin(), player_hand.end(), action.card.value());
-        player_hand.erase(it);
 
         // Add to active cards
         state.active_cards.emplace_back(action.card.value(), action.player);
-        state.actions.push_back(action);
+        state.last_action = std::make_tuple(state.get_player_idx(), state.trick, action, state.get_turn(), settings.get_phase_idx(state.phase));
+        if (action.card->suit != state.lead_suit())
+        {
+            state.shown_out[state.cur_player][settings.get_suit_idx(state.lead_suit())] = true;
+        }
 
         if (state.get_next_player() == state.leader)
         {
@@ -619,38 +640,53 @@ std::vector<Action> Engine::valid_actions() const
     }
     else if (state.phase == Phase::kPlay)
     {
-        const auto &player_hand = state.hands[state.cur_player];
-
-        if (state.cur_player != state.leader)
+        if (state.private_player >= 0 && state.private_player != state.cur_player)
         {
-            // Find matching suit cards
-            std::vector<Card> matching_suit_cards;
-            for (const Card &card : player_hand)
+            std::vector<Action> actions;
+            for (auto &card : state.unseen_cards)
             {
-                if (card.suit == state.lead_suit())
-                {
-                    matching_suit_cards.push_back(card);
-                }
-            }
-
-            if (!matching_suit_cards.empty())
-            {
-                std::vector<Action> actions;
-                for (const Card &card : matching_suit_cards)
+                if (!state.shown_out[state.cur_player][settings.get_suit_idx(card.suit)])
                 {
                     actions.push_back({state.cur_player, ActionType::kPlay, card});
                 }
-                return actions;
             }
+            return actions;
         }
-
-        // If leader or no matching suit cards, can play any card
-        std::vector<Action> actions;
-        for (const Card &card : player_hand)
+        else
         {
-            actions.push_back({state.cur_player, ActionType::kPlay, card});
+            const auto &player_hand = state.hands[state.cur_player];
+
+            if (state.cur_player != state.leader)
+            {
+                // Find matching suit cards
+                std::vector<Card> matching_suit_cards;
+                for (const Card &card : player_hand)
+                {
+                    if (card.suit == state.lead_suit())
+                    {
+                        matching_suit_cards.push_back(card);
+                    }
+                }
+
+                if (!matching_suit_cards.empty())
+                {
+                    std::vector<Action> actions;
+                    for (const Card &card : matching_suit_cards)
+                    {
+                        actions.push_back({state.cur_player, ActionType::kPlay, card});
+                    }
+                    return actions;
+                }
+            }
+
+            // If leader or no matching suit cards, can play any card
+            std::vector<Action> actions;
+            for (const Card &card : player_hand)
+            {
+                actions.push_back({state.cur_player, ActionType::kPlay, card});
+            }
+            return actions;
         }
-        return actions;
     }
     else if (state.phase == Phase::kEnd)
     {
@@ -660,5 +696,27 @@ std::vector<Action> Engine::valid_actions() const
     {
         throw std::runtime_error("Unhandled phase: " +
                                  std::to_string(static_cast<int>(state.phase)));
+    }
+}
+
+void Engine::set_private(int player)
+{
+    assert(state.phase == Phase::kPlay);
+    // Signals are unsupported right now with the shown_out logic
+    // among others.
+    assert(!settings.use_signals);
+    assert(state.private_player == -1);
+    state.private_player = player;
+    for (int p = 0; p < state.hands.size(); ++p)
+    {
+        if (p == player)
+        {
+            continue;
+        }
+        for (const Card &card : state.hands[p])
+        {
+            state.unseen_cards.insert(card);
+        }
+        state.hands[p].clear();
     }
 }

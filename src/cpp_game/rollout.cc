@@ -73,15 +73,6 @@ Rollout::Rollout(const Settings &settings)
 
 void Rollout::init_state()
 {
-    hist_player_idx_pt.push_back(-1);
-    hist_trick_pt.push_back(-1);
-    for (int i = 0; i < 2; ++i)
-    {
-        hist_action_pt.push_back(-1);
-    }
-    hist_turn_pt.push_back(-1);
-    hist_phase_pt.push_back(-1);
-
     encode_aux_info();
 }
 
@@ -110,12 +101,12 @@ void Rollout::reset_state(int engine_seed)
     init_state();
 }
 
-void Rollout::add_tasks(std::vector<int8_t> &vec)
+void Rollout::add_tasks(std::vector<int8_t> &vec, const Settings &settings, const State &state)
 {
     int N = vec.size();
-    vec.resize(N + max_num_tasks * 2, -1);
+    vec.resize(N + settings.resolved_max_num_tasks * 2, -1);
     size_t i = N;
-    for (int task_idx : engine->state.unassigned_task_idxs)
+    for (int task_idx : state.unassigned_task_idxs)
     {
         vec[i] = task_idx;
         vec[i + 1] = settings.num_players;
@@ -124,8 +115,8 @@ void Rollout::add_tasks(std::vector<int8_t> &vec)
 
     for (int player = 0; player < settings.num_players; ++player)
     {
-        int player_idx = engine->state.get_player_idx(player);
-        for (const auto &task : engine->state.assigned_tasks[player])
+        int player_idx = state.get_player_idx(player);
+        for (const auto &task : state.assigned_tasks[player])
         {
             vec[i] = task.task_idx;
             vec[i + 1] = player_idx;
@@ -148,24 +139,24 @@ void Rollout::encode_aux_info()
     }
 }
 
-int Rollout::add_card(std::vector<int8_t> &vec, int i, const Card &card)
+int Rollout::add_card(std::vector<int8_t> &vec, int i, const Card &card, const Settings &settings)
 {
     vec[i] = static_cast<int8_t>(card.rank - 1);
     vec[i + 1] = static_cast<int8_t>(settings.get_suit_idx(card.suit));
     return i + 2;
 }
 
-int Rollout::add_action(std::vector<int8_t> &vec, int i, const Action &action)
+int Rollout::add_action(std::vector<int8_t> &vec, int i, const Action &action, const Settings &settings)
 {
     switch (action.type)
     {
     case ActionType::kSignal:
     case ActionType::kPlay:
-        add_card(vec, i, action.card.value());
+        add_card(vec, i, action.card.value(), settings);
         break;
     case ActionType::kNoSignal:
-        vec[i] = max_suit_length;
-        vec[i + 1] = num_suits;
+        vec[i] = settings.max_suit_length;
+        vec[i + 1] = settings.num_suits;
         break;
     case ActionType::kDraft:
         vec[i] = action.task_idx.value();
@@ -180,25 +171,25 @@ int Rollout::add_action(std::vector<int8_t> &vec, int i, const Action &action)
     return i + 2;
 }
 
-void Rollout::add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand)
+void Rollout::add_hand(std::vector<int8_t> &vec, const std::vector<Card> &hand, const Settings &settings)
 {
     int N = vec.size();
-    vec.resize(N + max_hand_size * 2, -1);
+    vec.resize(N + settings.max_hand_size * 2, -1);
     int i = N;
     for (const auto &card : hand)
     {
-        i = add_card(vec, i, card);
+        i = add_card(vec, i, card, settings);
     }
 }
 
-void Rollout::add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions)
+void Rollout::add_valid_actions(std::vector<int8_t> &vec, const std::vector<Action> &valid_actions, const Settings &settings)
 {
     int N = vec.size();
-    vec.resize(N + max_num_actions * 2, -1);
+    vec.resize(N + settings.max_num_actions * 2, -1);
     int i = N;
     for (const auto &action : valid_actions)
     {
-        i = add_action(vec, i, action);
+        i = add_action(vec, i, action, settings);
     }
 }
 
@@ -214,16 +205,38 @@ void Rollout::record_move_inputs()
     int turn = engine->state.get_turn();
 
     // Record private inputs
-    add_hand(hand_pt, engine->state.hands[engine->state.get_player(player_idx)]);
+    add_hand(hand_pt, engine->state.hands[engine->state.get_player(player_idx)], settings);
     player_idx_pt.push_back(player_idx);
     trick_pt.push_back(engine->state.trick);
     turn_pt.push_back(turn);
     phase_pt.push_back(settings.get_phase_idx(engine->state.phase));
-    add_tasks(task_idxs_pt);
+    add_tasks(task_idxs_pt, settings, engine->state);
 
     // Record valid actions
     valid_actions = engine->valid_actions();
-    add_valid_actions(valid_actions_pt, valid_actions);
+    add_valid_actions(valid_actions_pt, valid_actions, settings);
+
+    // Record public history
+    if (engine->state.last_action)
+    {
+        const auto [hist_player_idx, hist_trick, hist_action, hist_turn, hist_phase] = *engine->state.last_action;
+        hist_player_idx_pt.push_back(hist_player_idx);
+        hist_trick_pt.push_back(hist_trick);
+        int N = hist_action_pt.size();
+        hist_action_pt.resize(N + 2, -1);
+        add_action(hist_action_pt, N, hist_action, settings);
+        hist_turn_pt.push_back(hist_turn);
+        hist_phase_pt.push_back(hist_phase);
+    }
+    else
+    {
+        hist_player_idx_pt.push_back(-1);
+        hist_trick_pt.push_back(-1);
+        int N = hist_action_pt.size();
+        hist_action_pt.resize(N + 2, -1);
+        hist_turn_pt.push_back(-1);
+        hist_phase_pt.push_back(-1);
+    }
 }
 
 void Rollout::move(int action_idx)
@@ -239,27 +252,9 @@ void Rollout::move(int action_idx)
     // Record the action and its probability
     actions_pt.push_back(action_idx);
 
-    // Record public history
-    hist_player_idx_pt.push_back(engine->state.get_player_idx());
-    hist_trick_pt.push_back(engine->state.trick);
-    int N = hist_action_pt.size();
-    hist_action_pt.resize(N + 2, -1);
-    add_action(hist_action_pt, N, action);
-    hist_turn_pt.push_back(engine->state.get_turn());
-    hist_phase_pt.push_back(settings.get_phase_idx(engine->state.phase));
-
     // Execute the action and record reward
     float reward = engine->move(action);
     rewards_pt.push_back(reward);
-}
-
-void Rollout::pop_last_history()
-{
-    hist_player_idx_pt.pop_back();
-    hist_trick_pt.pop_back();
-    hist_action_pt.resize(hist_action_pt.size() - 2);
-    hist_turn_pt.pop_back();
-    hist_phase_pt.pop_back();
 }
 
 BatchRollout::BatchRollout(const Settings &settings_, int num_rollouts_, int num_threads)
@@ -303,7 +298,6 @@ void BatchRollout::reset_state(const std::vector<int> &engine_seeds)
     {
         rollouts[i].reset_state(engine_seeds[i]);
     }
-    move_inputs.is_done = false;
 }
 
 const MoveInputs &BatchRollout::get_move_inputs()
@@ -372,7 +366,7 @@ const MoveInputs &BatchRollout::get_move_inputs()
     return move_inputs;
 }
 
-const MoveInputs &BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs)
+void BatchRollout::move(const py::array_t<int8_t> &action_indices, const py::array_t<float> &log_probs)
 {
     action_idxs.resize(action_indices.size());
     std::copy(action_indices.data(), action_indices.data() + action_indices.size(), action_idxs.begin());
@@ -396,17 +390,6 @@ const MoveInputs &BatchRollout::move(const py::array_t<int8_t> &action_indices, 
         py::array_t<float> log_probs_slice = log_probs[rollout_slice].cast<py::array_t<float>>();
         rollout.add_log_probs(log_probs_slice);
     }
-
-    if (is_done())
-    {
-        move_inputs.is_done = true;
-    }
-    else
-    {
-        get_move_inputs();
-    }
-
-    return move_inputs;
 }
 
 bool BatchRollout::is_done() const
@@ -422,11 +405,6 @@ bool BatchRollout::is_done() const
 
 const RolloutResults &BatchRollout::get_results()
 {
-    for (auto &rollout : rollouts)
-    {
-        rollout.pop_last_history();
-    }
-
     auto *hist_player_idx_ptr = static_cast<int8_t *>(results.hist_player_idx.mutable_data());
     auto *hist_trick_ptr = static_cast<int8_t *>(results.hist_trick.mutable_data());
     auto *hist_action_ptr = static_cast<int8_t *>(results.hist_action.mutable_data());

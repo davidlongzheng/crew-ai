@@ -20,7 +20,8 @@ def coerce_string(value):
     if value.startswith("("):
         assert value.endswith(")")
         return tuple(
-            int(x) for x in value.removeprefix("(").removesuffix(")").split("_")
+            coerce_string(x)
+            for x in value.removeprefix("(").removesuffix(")").split("_")
         )
 
     try:

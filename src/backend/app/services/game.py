@@ -24,7 +24,6 @@ from backend.app.schemas.game import (
     SettingsUpdated,
     StartedGame,
     StartGame,
-    TrickWon,
 )
 from game.engine import Engine
 from game.settings import Settings
@@ -206,22 +205,28 @@ class GameRoom:
             logger.error("Trying to start game but the wrong number of players joined.")
             return None
 
-        self.settings = Settings(
+        settings = Settings(
             num_players=self.num_players,
             min_difficulty=self.difficulty,
             max_difficulty=self.difficulty,
-            max_num_tasks=4,
-            use_signals=False,
-            bank="med",
+            max_num_tasks=8,
+            use_signals=True,
+            bank="all",
             use_drafting=True,
         )
-        self.stage = "play"
         if any(x.startswith("ai_") for x in self.player_uids):
-            self.ai = get_ai(self.settings)
+            try:
+                self.ai = get_ai(settings)
+            except ValueError:
+                logger.error(f"Unsupported AI settings: {settings}")
+                return None
             self.ai_state = self.ai.new_rollout()
         else:
             self.ai = None
             self.ai_state = None
+
+        self.settings = settings
+        self.stage = "play"
         self.engine = Engine(self.settings, use_py_rng=True)
         self.engine.reset_state()
         self.players = list(range(self.settings.num_players))
@@ -249,11 +254,8 @@ class GameRoom:
             ai_action = self.ai.get_move(self.engine, self.ai_state)
             if action == "ai":
                 action = ai_action
-            self.ai.record_move(self.engine, action, self.ai_state)
 
         msgs = []
-        prev_trick = self.engine.state.trick
-        prev_phase = self.engine.state.phase
         self.engine.move(action)
         self.seqnum += 1
         msgs.append(
@@ -266,16 +268,6 @@ class GameRoom:
                 valid_actions=self.valid_actions,
             )
         )
-        if self.engine.state.trick > prev_trick and prev_phase == "play":
-            self.seqnum += 1
-            msgs.append(
-                TrickWon(
-                    room_id=self.room_id,
-                    seqnum=self.seqnum,
-                    trick=prev_trick,
-                    trick_winner=self.engine.state.past_tricks[-1][1],
-                )
-            )
         return msgs
 
     def auto_move(self):

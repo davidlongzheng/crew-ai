@@ -8,8 +8,8 @@ import torch
 from tensordict import TensorDict
 
 import cpp_game
-from ai.actor import BatchActor
 from ai.featurizer import featurize
+from ai.models import PolicyValueModel
 from game.engine import Engine
 from game.settings import Settings
 from game.utils import encode_action, encode_hand, encode_tasks
@@ -21,7 +21,7 @@ def do_batch_rollout(
     num_rollouts: int,
     batch_seed: int | None = None,
     engine_seeds: int | list[int] | None = None,
-    actor: BatchActor | None = None,
+    pv_model: PolicyValueModel | None = None,
     device: torch.device | None = None,
     argmax: bool = False,
 ) -> list[StrMap]:
@@ -42,15 +42,16 @@ def do_batch_rollout(
 
     engines = [Engine(settings=settings, seed=seed) for seed in engine_seeds]
     policy_rng = np.random.default_rng(batch_seed)
-    public_history_pr_pt: list[list[StrMap]] = [[{}] for _ in range(num_rollouts)]
+    public_history_pr_pt: list[list[StrMap]] = [[] for _ in range(num_rollouts)]
     private_inputs_pr_pt: list[list[StrMap]] = [[] for _ in range(num_rollouts)]
     valid_actions_pr_pt: list[list[list[tuple]]] = [[] for _ in range(num_rollouts)]
     log_probs_pr_pt: list[list[list[float]]] = [[] for _ in range(num_rollouts)]
     actions_pr_pt: list[list[int]] = [[] for _ in range(num_rollouts)]
     rewards_pr_pt: list[list[float]] = [[] for _ in range(num_rollouts)]
 
-    if actor:
-        actor.start()
+    if pv_model:
+        pv_model.eval()
+        pv_model.start_single_step()
 
     while any(engine.state.phase != "end" for engine in engines):
         # Before running policy model
@@ -94,11 +95,26 @@ def do_batch_rollout(
                 [encode_action(x, settings) for x in valid_actions]
             )
 
+            if engine.state.last_action:
+                last_action = engine.state.last_action
+                public_history_pr_pt[rollout_idx].append(
+                    {
+                        "player_idx": last_action[0],
+                        "trick": last_action[1],
+                        "action": encode_action(last_action[2], settings),
+                        "turn": last_action[3],
+                        "phase": last_action[4],
+                        "task_idxs": encode_tasks(engine.state),
+                    }
+                )
+            else:
+                public_history_pr_pt[rollout_idx].append({})
+
         # Purposefully create dummy entries for finished
         # samples so that the hidden state of the policy model is
         # nice and aligned.
         # The entries are discarded later.
-        if actor:
+        if pv_model:
             inps = featurize(
                 [x[-1] for x in public_history_pr_pt],
                 [x[-1] for x in private_inputs_pr_pt],
@@ -107,7 +123,9 @@ def do_batch_rollout(
                 non_feature_dims=1,
                 device=device,
             )
-            log_probs_pr = actor.get_log_probs(inps)
+            with torch.no_grad():
+                log_probs_pr, _, _ = pv_model(inps)
+                log_probs_pr = log_probs_pr.to("cpu").numpy()
         else:
             log_probs_pr = [
                 np.array(
@@ -138,21 +156,11 @@ def do_batch_rollout(
             action = valid_actions[action_idx]
             actions_pr_pt[rollout_idx].append(action_idx)
             log_probs_pr_pt[rollout_idx].append(list(log_probs))
-            public_history_pr_pt[rollout_idx].append(
-                {
-                    "trick": engine.state.trick,
-                    "action": encode_action(action, settings),
-                    "player_idx": player_idx,
-                    "turn": turn,
-                    "phase": settings.get_phase_idx(engine.state.phase),
-                    "task_idxs": encode_tasks(engine.state),
-                }
-            )
             reward = engine.move(action)
             rewards_pr_pt[rollout_idx].append(reward)
 
-    if actor:
-        actor.stop()
+    if pv_model:
+        pv_model.stop_single_step()
 
     ret: list[StrMap] = []
     for rollout_idx, engine in enumerate(engines):
@@ -163,7 +171,6 @@ def do_batch_rollout(
         log_probs_pt = log_probs_pr_pt[rollout_idx]
         rewards_pt = rewards_pr_pt[rollout_idx]
 
-        public_history_pt.pop()
         assert (
             len(valid_actions_pt)
             == len(public_history_pt)
@@ -225,7 +232,7 @@ def do_batch_rollout_cpp(
     batch_rollout: cpp_game.BatchRollout,
     batch_seed: int | None = None,
     engine_seeds: int | list[int] | None = None,
-    actor: BatchActor | None = None,
+    pv_model: PolicyValueModel | None = None,
     device: torch.device | None = None,
     argmax: bool = False,
     record_cpp_time: bool = False,
@@ -238,7 +245,7 @@ def do_batch_rollout_cpp(
     if engine_seeds is None:
         engine_seed_rng = random.Random(batch_seed)
         engine_seeds = [
-            engine_seed_rng.randint(0, 100_000_000) for _ in range(num_rollouts)
+            engine_seed_rng.randint(0, 1_000_000_000) for _ in range(num_rollouts)
         ]
     elif isinstance(engine_seeds, list):
         engine_seed_rng = random.Random(batch_seed)
@@ -250,23 +257,21 @@ def do_batch_rollout_cpp(
     batch_rollout.reset_state(engine_seeds)
     policy_rng = np.random.default_rng(batch_seed)
 
-    if actor:
-        actor.start()
+    if pv_model:
+        pv_model.eval()
+        pv_model.start_single_step()
 
     cpp_timer = SimpleTimer() if record_cpp_time else nullcontext()
-    first = True
 
-    while True:
-        if first:
-            with cpp_timer:
-                move_inps = batch_rollout.get_move_inputs()
-            first = False
+    while not batch_rollout.is_done():
+        with cpp_timer:
+            move_inps = batch_rollout.get_move_inputs()
 
         # Purposefully create dummy entries for finished
         # samples so that the hidden state of the policy model is
         # nice and aligned.
         # The entries are discarded later.
-        if actor:
+        if pv_model:
             inps = TensorDict(
                 hist=TensorDict(
                     player_idx=move_inps.hist_player_idx,
@@ -286,7 +291,9 @@ def do_batch_rollout_cpp(
                 valid_actions=move_inps.valid_actions,
             )
             inps = inps.to(device)
-            log_probs_pr = actor.get_log_probs(inps)
+            with torch.no_grad():
+                log_probs_pr, _, _ = pv_model(inps)
+                log_probs_pr = log_probs_pr.to("cpu").numpy()
         else:
             valid_moves = move_inps.valid_actions[:, :, 0] >= 0
             num_valid = np.sum(valid_moves, axis=1, keepdims=True)
@@ -306,13 +313,10 @@ def do_batch_rollout_cpp(
             )
 
         with cpp_timer:
-            move_inps = batch_rollout.move(action_idxs, log_probs_pr)
+            batch_rollout.move(action_idxs, log_probs_pr)
 
-        if move_inps.is_done:
-            break
-
-    if actor:
-        actor.stop()
+    if pv_model:
+        pv_model.stop_single_step()
 
     with cpp_timer:
         results = batch_rollout.get_results()

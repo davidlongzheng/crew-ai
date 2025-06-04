@@ -10,6 +10,7 @@
 #include "utils.h"
 #include "engine.h"
 #include "rollout.h"
+#include "tree_search.h"
 
 namespace py = pybind11;
 
@@ -107,7 +108,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("num_players", &State::num_players)
         .def_readwrite("phase", &State::phase)
         .def_readwrite("hands", &State::hands)
-        .def_readwrite("actions", &State::actions)
+        .def_readwrite("last_action", &State::last_action)
         .def_readwrite("trick", &State::trick)
         .def_readwrite("leader", &State::leader)
         .def_readwrite("captain", &State::captain)
@@ -305,8 +306,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def_readwrite("turn", &MoveInputs::turn)
         .def_readwrite("phase", &MoveInputs::phase)
         .def_readwrite("valid_actions", &MoveInputs::valid_actions)
-        .def_readwrite("task_idxs", &MoveInputs::task_idxs)
-        .def_readonly("is_done", &MoveInputs::is_done);
+        .def_readwrite("task_idxs", &MoveInputs::task_idxs);
 
     // Bind RolloutResults struct
     py::class_<RolloutResults>(m, "RolloutResults")
@@ -351,8 +351,8 @@ PYBIND11_MODULE(cpp_game, m)
         .def("get_move_inputs", &BatchRollout::get_move_inputs)
         .def("move", &BatchRollout::move,
              py::arg("action_indices"), py::arg("log_probs"))
-        .def("is_done", &BatchRollout::is_done)
-        .def("get_results", &BatchRollout::get_results);
+        .def("get_results", &BatchRollout::get_results)
+        .def("is_done", &BatchRollout::is_done);
 
     py::class_<Rng>(m, "Rng")
         .def(py::init<const std::optional<int> &>(),
@@ -360,4 +360,36 @@ PYBIND11_MODULE(cpp_game, m)
         .def("randint", &Rng::randint)
         .def("shuffle_idxs", &Rng::shuffle_idxs)
         .def("choice", &Rng::choice);
+
+    py::class_<Node>(m, "Node")
+        .def(py::init<const std::vector<Action> &, int, int, int, Node *>())
+        .def("child_U", &Node::child_U)
+        .def("child_Q", &Node::child_Q)
+        .def("N", &Node::N)
+        .def("W", &Node::W)
+        .def("Q", &Node::Q)
+        .def_readonly("valid_actions", &Node::valid_actions);
+
+    py::class_<Featurizer>(m, "Featurizer")
+        .def(py::init<const Settings &, int>(),
+             py::arg("settings"), py::arg("num_rollouts"))
+        .def("reset", &Featurizer::reset)
+        .def("record_move_inputs", &Featurizer::record_move_inputs,
+             py::arg("engine"))
+        .def("get_move_inputs", &Featurizer::get_move_inputs)
+        .def_readonly("move_inputs", &Featurizer::move_inputs)
+        .def_readonly("num_rollouts", &Featurizer::num_rollouts)
+        .def_readwrite("rollout_idx", &Featurizer::rollout_idx);
+
+    py::class_<TreeSearch>(m, "TreeSearch")
+        .def(py::init<const Settings &, int, float, float, int, bool, bool, bool, float, float, int>(),
+             py::arg("settings"), py::arg("num_rollouts"), py::arg("c_puct_base"), py::arg("c_puct_init"),
+             py::arg("num_parallel"), py::arg("root_noise"), py::arg("all_noise"),
+             py::arg("cheating"), py::arg("noise_eps"), py::arg("noise_alpha"),
+             py::arg("seed") = -1)
+        .def("reset", &TreeSearch::reset)
+        .def("select_nodes", &TreeSearch::select_nodes)
+        .def("expand_nodes", &TreeSearch::expand_nodes)
+        .def("get_final_pv", &TreeSearch::get_final_pv)
+        .def_readonly("leaf_node_idxs", &TreeSearch::leaf_node_idxs);
 }

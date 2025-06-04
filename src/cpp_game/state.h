@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 #include "tasks.h"
 #include "types.h"
@@ -20,12 +21,13 @@ struct State
     int num_players;
     Phase phase;
     std::vector<std::vector<Card>> hands;
-    std::vector<Action> actions;
+    std::optional<std::tuple<int, int, Action, int, int>> last_action;
     int trick;
     int leader;
     int captain;
     int cur_player;
     std::vector<std::pair<Card, int>> active_cards;
+    std::vector<std::vector<bool>> shown_out;
     std::vector<std::pair<std::vector<Card>, int>> past_tricks;
     std::vector<std::optional<Signal>> signals;
     std::optional<int> trick_winner;
@@ -35,6 +37,10 @@ struct State
     std::vector<std::vector<AssignedTask>> assigned_tasks;
     Status status;
     double value;
+
+    // State used in private mode.
+    int private_player = -1;
+    std::unordered_set<Card> unseen_cards;
 
     // Helper methods
     int get_next_player(int player = -1) const

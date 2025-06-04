@@ -22,7 +22,13 @@ class MockState:
 
 
 def test_parse_formula():
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        use_drafting=False,
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+    )
     for formula, desc, difficulty in TASK_DEFS:
         AssignedTask(
             formula=formula,
@@ -36,7 +42,13 @@ def test_parse_formula():
 
 def test_sum_condition():
     """Test '1T sum>28 #t=0' - must win a trick with sum > 28 and no trumps"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="1T sum>28 #t=0",
         desc="",
@@ -95,7 +107,13 @@ def test_sum_condition():
 
 def test_consecutive_tricks():
     """Test 'consec(3)' - must win 3 consecutive tricks"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="consec(3)",
         desc="",
@@ -145,7 +163,13 @@ def test_consecutive_tricks():
 
 def test_specific_tricks():
     """Test 'T0 T1' - must win tricks 0 and 1"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="T0 T1",
         desc="",
@@ -190,7 +214,13 @@ def test_specific_tricks():
 
 def test_specific_card():
     """Test '9p' - must win the 9 of pink"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="9p",
         desc="",
@@ -254,7 +284,13 @@ def test_specific_card():
 
 def test_cumulative_tricks():
     """Test '#T>#T(capt)' - must win more tricks than the captain"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="#T>#T(capt)",
         desc="",
@@ -290,7 +326,13 @@ def test_cumulative_tricks():
 
 def test_cumulative_cards():
     """Test '#p>=5' - must win at least 5 pink cards"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="#p>=5",
         desc="",
@@ -325,7 +367,13 @@ def test_cumulative_cards():
 
 def test_with_condition():
     """Test '1T with(t)' - must win a trick while playing a trump"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="1T with(t)",
         desc="",
@@ -357,7 +405,14 @@ def test_with_condition():
 
 def test_sweep_condition():
     """Test '#sweep>=1' - must win all cards of at least one suit"""
-    settings = Settings(side_suit_length=3, task_idxs=(0,))
+    settings = Settings(
+        side_suit_length=3,
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="#sweep>=1",
         desc="",
@@ -387,7 +442,13 @@ def test_sweep_condition():
 
 def test_no_lead_condition():
     """Test 'nolead(y,p)' - must not lead yellow or pink"""
-    settings = Settings(task_idxs=(0,))
+    settings = Settings(
+        task_idxs=(0,),
+        min_difficulty=None,
+        max_difficulty=None,
+        max_num_tasks=None,
+        use_drafting=False,
+    )
     task = AssignedTask(
         formula="nolead(y,p)",
         desc="",

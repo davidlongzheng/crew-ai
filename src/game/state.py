@@ -13,7 +13,7 @@ class State:
     num_players: int
     phase: Phase
     hands: list[list[Card]]
-    actions: list[Action]
+    last_action: tuple[int, int, Action, int, int] | None
     trick: int
     leader: int
     captain: int
@@ -31,18 +31,18 @@ class State:
     value: float
     shown_out: list[dict[int, bool]]
 
-    def get_next_player(self, player=None):
+    def get_next_player(self, player=None) -> int:
         player = self.cur_player if player is None else player
         return (player + 1) % self.num_players
 
-    def get_player_idx(self, player=None):
+    def get_player_idx(self, player=None) -> int:
         player = self.cur_player if player is None else player
         return (player - self.captain) % self.num_players
 
-    def get_player(self, player_idx):
+    def get_player(self, player_idx) -> int:
         return (self.captain + player_idx) % self.num_players
 
-    def get_turn(self, player=None):
+    def get_turn(self, player=None) -> int:
         player = self.cur_player if player is None else player
         return (player - self.leader) % self.num_players
 

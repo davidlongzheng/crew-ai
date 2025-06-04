@@ -4,14 +4,12 @@ import shutil
 import time
 from collections import Counter
 from contextlib import nullcontext
-from dataclasses import asdict
 from functools import cache
 from pathlib import Path
 from typing import cast
 
 import click
 import numpy as np
-import pandas as pd
 import torch
 from ipdb import launch_ipdb_on_exception
 from loguru import logger
@@ -24,39 +22,25 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 import cpp_game
-from ai.curriculum import Curriculum, get_curriculum
 from ai.hyperparams import HP_TYPE, Hyperparams
 from ai.models import PolicyValueModel, get_models
 from ai.rollout import do_batch_rollout_cpp
 from ai.summary_writer import CustomSummaryWriter
 from ai.utils import (
+    Timer,
     create_lr_sched,
     create_optim,
     get_device,
+    get_phase_weights,
     num_params,
     print_memory_usage,
     should_keep_outdir,
-    win_rate_by_difficulty,
-    get_phase_weights,
-    Timer,
 )
 from game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
 
 
-@cache
-def gae_advantage_discount(num_moves, gae_lambda, device, dtype):
-    i = torch.arange(num_moves).view(-1, 1)
-    j = torch.arange(num_moves).view(1, -1)
-    exponent = i - j
-    mask = exponent >= 0
-    return torch.where(
-        mask, gae_lambda**exponent, torch.zeros_like(exponent, dtype=dtype)
-    ).to(device)
-
-
-def compute_advantage(
+def compute_values(
     td: TensorDict,
-    gae_lambda: float,
     pv_model: PolicyValueModel,
     device: torch.device,
     hp: Hyperparams,
@@ -72,47 +56,11 @@ def compute_advantage(
             values[i : i + eff_batch_size] = batch_values
 
     td["orig_values"] = values
-    T = values.shape[-1]
-    fut_values = torch.roll(values, shifts=-1, dims=-1)
-    fut_values[..., -1] = 0.0
-    # resids here refers to Bellman TD residuals.
-    resids = td["rewards"] + fut_values - values
-    advantages = resids @ gae_advantage_discount(T, gae_lambda, device, resids.dtype)
-    value_targets = td["rewards"].flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1])
-
-    # (N, T)
-    # More than one valid action
-    mask = (td["inps", "valid_actions"][..., 0] != -1).sum(dim=-1) > 1
-    # (N*T)
-    mask = mask.reshape((-1,))
-    masked_advantage = advantages.reshape((-1,))[mask]
-    advantage_mean, advantage_std = masked_advantage.mean(), masked_advantage.std()
-    norm_advantages = (advantages - advantage_mean) / advantage_std
-
-    td["unnorm_advantages"] = advantages
-    td["advantages"] = norm_advantages
-    td["value_targets"] = value_targets
 
 
 @cache
 def get_cross_entropy_loss():
     return nn.CrossEntropyLoss()
-
-
-def compute_aux_info_loss(td):
-    # (B, C)
-    targets = td["aux_info"].long()
-    # (B, T, C, P)
-    pred = td["aux_info_preds"]
-    _, T, _, P = pred.shape
-
-    # (B, T, C)
-    targets = targets.unsqueeze(-2).expand(-1, T, -1)
-    targets = targets.reshape(-1)
-    pred = pred.reshape(-1, P)
-    loss = get_cross_entropy_loss()(pred, targets)
-
-    return loss
 
 
 def compute_loss(
@@ -121,7 +69,6 @@ def compute_loss(
     ppo_coef,
     entropy_coef,
     value_coef,
-    aux_info_coef,
     phase_weights,
 ):
     # (N, T)
@@ -200,9 +147,6 @@ def compute_loss(
     combined_loss = (
         ppo_coef * ppo_loss + entropy_coef * entropy_loss + value_coef * value_loss
     )
-    if aux_info_coef:
-        aux_info_loss = compute_aux_info_loss(td)
-        combined_loss += aux_info_coef * aux_info_loss
 
     ret = {
         "loss": combined_loss,
@@ -212,8 +156,6 @@ def compute_loss(
         "frac_clipped": frac_clipped,
         "value_loss": value_loss,
     }
-    if aux_info_coef:
-        ret["aux_info_loss"] = aux_info_loss
 
     return ret
 
@@ -286,11 +228,9 @@ def train_one_epoch(
                 optim.zero_grad()
 
             with torch.no_grad() if mode == "val" else nullcontext():
-                (
-                    td_batch["log_probs"],
-                    td_batch["values"],
-                    td_batch["aux_info_preds"],
-                ) = pv_model(td_batch["inps"])
+                (td_batch["log_probs"], td_batch["values"], _) = pv_model(
+                    td_batch["inps"]
+                )
 
                 losses = compute_loss(
                     td_batch,
@@ -476,44 +416,10 @@ def train_one_round(
     gc["num_rollouts"] += hp.num_train_rollouts_per_round
 
 
-def save_task_info(
-    td: TensorDict,
-    round: int,
-    outdir: Path,
-):
-    (outdir / "task_infos").mkdir(exist_ok=True)
-    # compute num samples and success rate per task_idx + game difficulty.
-    # compute num samples and win rate per game difficulty.
-
-    df = pd.DataFrame(
-        {
-            "task_idx": td["task_idxs_no_pt"].cpu().numpy().tolist(),
-            "task_success": td["task_success"].cpu().numpy().tolist(),
-            "game_win": td["win"].cpu().numpy(),
-            "game_difficulty": td["difficulty"].cpu().numpy(),
-        }
-    )
-    df["round"] = round
-    df["count"] = 1
-
-    task_df = df.explode(["task_idx", "task_success"])
-    task_df = task_df.query("task_idx != -1")
-    task_df = task_df.groupby(["round", "task_idx", "game_difficulty"])[
-        ["task_success", "count"]
-    ].sum()
-
-    game_df = df.groupby(["round", "game_difficulty"])[["game_win", "count"]].sum()
-    ret = {
-        "task": task_df,
-        "game": game_df,
-    }
-    out_fn = outdir / "task_infos" / f"task_info_{round}.pkl"
-    pd.to_pickle(ret, str(out_fn))
-
-
 def train(
     device: torch.device,
     pv_model: PolicyValueModel,
+    teacher_model: PolicyValueModel,
     optim: torch.optim.Optimizer,
     lr_sched: torch.optim.lr_scheduler.LRScheduler,
     settings: Settings,
@@ -525,18 +431,8 @@ def train(
     rng_state,
     num_threads: int,
     skip_td: bool,
-    save_task_info_freq: int,
-    curriculum: Curriculum | None,
-    curriculum_state: dict,
-    last_win_rate: float,
 ) -> None:
     timer = Timer(writer)
-
-    if curriculum:
-        settings = cast(
-            Settings, curriculum.update_settings(curriculum_state, settings)
-        )
-        logger.info(f"New settings: {settings}")
 
     cpp_settings = settings.to_cpp()
     batch_rollout = cpp_game.BatchRollout(
@@ -551,19 +447,17 @@ def train(
         torch.cuda.set_rng_state_all(rng_state[1])
 
     round = start_round
-    while round < hp.num_rounds:
+    while round < hp.num_private_rounds:
         torch.save(
             {
                 "round": round,
-                "curriculum_state": curriculum_state,
                 "pv_model": pv_model.state_dict(),
                 "optim": optim.state_dict(),
                 "lr_sched": lr_sched.state_dict(),
                 "gc": gc,
                 "rng_state": (torch.get_rng_state(), torch.cuda.get_rng_state_all()),
-                "last_win_rate": last_win_rate,
             },
-            outdir / "checkpoint_unverified.pth",
+            outdir / "checkpoint.pth",
         )
 
         start_time = time.time()
@@ -577,7 +471,7 @@ def train(
         td = do_batch_rollout_cpp(
             batch_rollout,
             batch_seed=seed,
-            pv_model=pv_model,
+            pv_model=teacher_model,
             device=device,
         )
         timer.finish("rollout", round)
@@ -585,75 +479,14 @@ def train(
         if hp.profile_memory:
             print_memory_usage("after rollout")
 
-        win_rate = td["win"].float().mean()
-        if win_rate < last_win_rate - hp.reset_thresh:
-            logger.warning(
-                f"Win rate {win_rate:.3f} is less than {last_win_rate:.3f} by more than {hp.reset_thresh:.3f}. Resetting model."
-            )
-            state_dict = torch.load(outdir / "checkpoint.pth", weights_only=False)
-            pv_model.load_state_dict(state_dict["pv_model"])
-            optim.load_state_dict(state_dict["optim"])
-            lr_sched.load_state_dict(state_dict["lr_sched"])
-            gc["num_resets"] += 1
-            continue
-
-        (outdir / "checkpoint_unverified.pth").replace(outdir / "checkpoint.pth")
-
-        if curriculum and (
-            new_settings := curriculum.update_settings(curriculum_state, settings, td)
-        ):
-            settings = new_settings
-            logger.info(f"New settings: {settings}")
-            cpp_settings = settings.to_cpp()
-            batch_rollout = cpp_game.BatchRollout(
-                cpp_settings,
-                hp.num_train_rollouts_per_round + hp.num_val_rollouts_per_round,
-                num_threads=num_threads,
-            )
-            last_win_rate = 0.0
-            continue
-
-        if save_task_info_freq and round % save_task_info_freq == 0:
-            save_task_info(td, round, outdir)
-
         if not skip_td:
             torch.save(td, outdir / "td.pth")
 
-        mean_reward = td["rewards"].sum(dim=-1).mean()
-        writer.add_scalar("rewards/reward_mean", mean_reward, round)
-        mean_frac_success = td["task_success"].float().mean(dim=1).mean()
-        assert mean_frac_success <= 1.0
-        writer.add_scalar("rewards/frac_success_mean", mean_frac_success, round)
-        writer.add_scalar("rewards/win_rate", win_rate, round)
-        writer.add_scalar("rewards/win_rate_vs_rollouts", win_rate, gc["num_rollouts"])
-
-        win_rates = win_rate_by_difficulty(td)
-        for diff, _win_rate in win_rates.items():
-            writer.add_scalar(f"win_rate_by_diff/win_rate_{diff}", _win_rate, round)
-
-        writer.add_hparams(
-            hparam_dict={
-                k: v
-                for k, v in asdict(hp).items()
-                if isinstance(v, (int, float, str, bool)) or v is None
-            },
-            metric_dict={
-                "metrics/reward_mean": mean_reward,
-                "metrics/frac_success": mean_frac_success,
-                "metrics/win_rate": win_rate,
-            },
-            global_step=round,
-        )
-
-        timer.start("advantage")
-        compute_advantage(td, hp.gae_lambda, pv_model, device, hp)
-        for k in ["orig_value", "value_target", "unnorm_advantage"]:
-            writer.add_scalar(f"rewards/{k}_mean", td[f"{k}s"].mean(), round)
-            writer.add_scalar(f"rewards/{k}_std", td[f"{k}s"].std(), round)
-        timer.finish("advantage", round)
+        timer.start("values")
+        compute_values(td, teacher_model, device, hp)
 
         if hp.profile_memory:
-            print_memory_usage("after advantage")
+            print_memory_usage("after values")
 
         timer.start("training")
         train_one_round(
@@ -676,11 +509,8 @@ def train(
             return
 
         elapsed = time.time() - start_time
-        logger.info(
-            f"Round {round}: mean_reward={mean_reward:.3f}, win_rate={win_rate:.3f}, elapsed={elapsed:.3f}s"
-        )
+        logger.info(f"Round {round}: elapsed={elapsed:.3f}s")
 
-        last_win_rate = win_rate
         round += 1
 
 
@@ -691,6 +521,7 @@ def train(
     help="Outdir",
     required=True,
 )
+@click.option("--teacher-dir", type=Path, help="Teacher dir", required=True)
 @click.option(
     "--hp",
     type=HP_TYPE,
@@ -702,10 +533,6 @@ def train(
     type=SETTINGS_TYPE,
     default=get_preset(DEFAULT_PRESET),
     help="Settings",
-)
-@click.option(
-    "--curriculum-mode",
-    help="Curriculum mode",
 )
 @click.option("--device", type=torch.device, default=get_device(), help="Device")
 @click.option(
@@ -745,19 +572,11 @@ def train(
     is_flag=True,
     help="Skip save td.",
 )
-@click.option(
-    "--save-task-info-freq", type=int, default=10, help="Save task info every n rounds."
-)
-@click.option(
-    "--skip-load-win-rate",
-    is_flag=True,
-    help="Skip load win rate.",
-)
 def main(
     outdir: Path,
+    teacher_dir: Path,
     hp: Hyperparams,
     settings: Settings,
-    curriculum_mode: str | None,
     device: torch.device,
     seed: int,
     clean: bool,
@@ -766,8 +585,6 @@ def main(
     no_error_catch: bool,
     num_threads: int,
     skip_td: bool,
-    save_task_info_freq: int,
-    skip_load_win_rate: bool,
 ) -> None:
     outdir = outdir.resolve()
     autoindex_runs = not (
@@ -810,11 +627,6 @@ def main(
     try:
         logger.info("** Training Configuration **")
         logger.info(f"Settings: {settings}")
-        if curriculum_mode is not None:
-            curriculum = get_curriculum(curriculum_mode)
-            logger.info(f"Curriculum: {curriculum_mode}")
-        else:
-            curriculum = None
         logger.info(f"Hyperparams: {hp}")
         logger.info(f"Output Directory: {outdir}")
         logger.info(f"Device: {device}")
@@ -826,12 +638,25 @@ def main(
             print_memory_usage("before create models")
 
         logger.info("** Creating models, optimizer **")
-        models = get_models(hp, settings)
+
+        teacher_model = get_models(hp, settings)["pv"]
+        teacher_model.to(device)
+        teacher_model = cast(PolicyValueModel, teacher_model)
+        teacher_state_dict = torch.load(
+            teacher_dir / "checkpoint.pth", weights_only=False
+        )
+        teacher_model.load_state_dict(teacher_state_dict["pv_model"])
+        for param in teacher_model.parameters():
+            param.requires_grad = False
+        teacher_model.eval()
+
+        models = get_models(hp, settings, private=True)
         for m in models.values():
             m.to(device)
         pv_model = cast(PolicyValueModel, models["pv"])
-        optim = create_optim([pv_model], hp)
-        lr_sched = create_lr_sched(optim, hp)
+        pv_model.load_state_dict(teacher_state_dict["pv_model"])
+        optim = create_optim([pv_model], hp, private=True)
+        lr_sched = create_lr_sched(optim, hp, private=True)
 
         if (outdir / "checkpoint.pth").exists():
             logger.info("Loading state from checkpoint")
@@ -848,13 +673,14 @@ def main(
                 obj.load_state_dict(orig_state_dict[key])
                 del orig_state_dict[key]
 
-        logger.info(f"Num Parameters: pv={num_params(pv_model):.2e}")
+        logger.info(
+            f"Num Parameters: pv={num_params(pv_model):.2e} teacher_pv={num_params(teacher_model):.2e}"
+        )
 
         torch.save(
             {
                 "outdir": outdir,
                 "settings": settings,
-                "curriculum": curriculum,
                 "hp": hp,
                 "seed": seed,
                 "device": device,
@@ -868,6 +694,7 @@ def main(
                 train(
                     device,
                     pv_model,
+                    teacher_model,
                     optim,
                     lr_sched,
                     settings,
@@ -879,12 +706,6 @@ def main(
                     orig_state_dict.get("rng_state", None),
                     num_threads,
                     skip_td,
-                    save_task_info_freq,
-                    curriculum,
-                    orig_state_dict.get("curriculum_state", {}),
-                    0.0
-                    if skip_load_win_rate
-                    else orig_state_dict.get("last_win_rate", 0.0),
                 )
     finally:
         (outdir / "_running").unlink()

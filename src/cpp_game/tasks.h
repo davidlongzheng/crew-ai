@@ -64,15 +64,16 @@ inline double clamp(double x)
 struct Condition
 {
     Condition(const Settings &settings_, int player_)
-        : settings(settings_), player(player_), status(Status::kUnresolved), partial_value(0.0) {}
+        : settings(&settings_), player(player_), status(Status::kUnresolved), partial_value(0.0) {}
 
     virtual ~Condition() = default;
 
     virtual void reset() {}
     virtual void on_trick_end([[maybe_unused]] const State &state) {}
     virtual void on_end() {}
+    virtual std::shared_ptr<Condition> clone() const = 0;
 
-    const Settings &settings;
+    const Settings *settings;
     int player;
     Status status;
     double partial_value;
@@ -100,6 +101,11 @@ struct TrickCond : public Condition
         }
     }
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<TrickCond>(*this);
+    }
+
     int trick;
     bool no;
 };
@@ -125,6 +131,11 @@ struct CardCond : public Condition
         }
     }
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<CardCond>(*this);
+    }
+
     Card card;
 };
 
@@ -139,7 +150,7 @@ struct CumTrickCond : public Condition
         if (std::holds_alternative<TrickCountType>(num_tricks) &&
             std::get<TrickCountType>(num_tricks) == TrickCountType::kAnyOther)
         {
-            num_other_tricks_won_per_player = std::vector<int>(settings.num_players, 0);
+            num_other_tricks_won_per_player = std::vector<int>(settings->num_players, 0);
         }
     }
 
@@ -152,7 +163,7 @@ struct CumTrickCond : public Condition
         if (std::holds_alternative<TrickCountType>(num_tricks) &&
             std::get<TrickCountType>(num_tricks) == TrickCountType::kAnyOther)
         {
-            num_other_tricks_won_per_player = std::vector<int>(settings.num_players, 0);
+            num_other_tricks_won_per_player = std::vector<int>(settings->num_players, 0);
         }
         else
         {
@@ -205,6 +216,11 @@ struct CumTrickCond : public Condition
     void on_trick_end(const State &state) override;
     void on_end() override;
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<CumTrickCond>(*this);
+    }
+
     Direction direction;
     std::variant<int, TrickCountType> num_tricks;
     int num_tricks_won;
@@ -240,6 +256,11 @@ struct CumCardCond : public Condition
 
     void on_end() override;
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<CumCardCond>(*this);
+    }
+
     Direction direction;
     CardFilter card_filter;
     std::optional<int> num_cards;
@@ -269,6 +290,11 @@ struct WithCond : public Condition
         }
     }
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<WithCond>(*this);
+    }
+
     CardFilter card_filter;
 };
 
@@ -282,7 +308,7 @@ struct SweepCond : public Condition
     {
         status = Status::kUnresolved;
         partial_value = 0.0;
-        cards_won_per_suit = std::vector<int>(settings.num_side_suits, 0);
+        cards_won_per_suit = std::vector<int>(settings->num_side_suits, 0);
     }
 
     void on_trick_end(const State &state) override;
@@ -293,6 +319,11 @@ struct SweepCond : public Condition
         {
             status = Status::kFail;
         }
+    }
+
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<SweepCond>(*this);
     }
 
     int num_sweeps;
@@ -321,6 +352,11 @@ struct ConsecCond : public Condition
 
     void on_end() override;
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<ConsecCond>(*this);
+    }
+
     int num_consec;
     bool no;
     std::optional<int> cur_consec_start;
@@ -348,6 +384,11 @@ struct SumCond : public Condition
         }
     }
 
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<SumCond>(*this);
+    }
+
     Direction direction;
     int sum;
 };
@@ -373,6 +414,11 @@ struct NoLeadCond : public Condition
         {
             status = Status::kSuccess;
         }
+    }
+
+    std::shared_ptr<Condition> clone() const override
+    {
+        return std::make_shared<NoLeadCond>(*this);
     }
 
     std::vector<int> suits;
@@ -549,7 +595,7 @@ struct AssignedTask : public Task
 {
     AssignedTask(const std::string &formula_, const std::string &desc_, int difficulty_,
                  int task_idx_, int player_, const Settings &settings_)
-        : Task(formula_, desc_, difficulty_, task_idx_), player(player_), settings(settings_),
+        : Task(formula_, desc_, difficulty_, task_idx_), player(player_), settings(&settings_),
           status(Status::kUnresolved), value(0.0)
     {
         parse_formula();
@@ -577,7 +623,7 @@ struct AssignedTask : public Task
 
             for (const auto &token : tokens)
             {
-                conds.push_back(parse_token(token, settings, player));
+                conds.push_back(parse_token(token, *settings, player));
             }
         }
         catch (const std::exception &e)
@@ -619,10 +665,10 @@ struct AssignedTask : public Task
 
             assert(-1.0 <= avg_cond_value && avg_cond_value <= 1.0);
 
-            double task_bonus = (status == Status::kSuccess) ? settings.task_bonus : (status == Status::kFail) ? -settings.task_bonus
-                                                                                                               : 0.0;
+            double task_bonus = (status == Status::kSuccess) ? settings->task_bonus : (status == Status::kFail) ? -settings->task_bonus
+                                                                                                                : 0.0;
 
-            value = (avg_cond_value + task_bonus) / (settings.task_bonus + 1.0);
+            value = (avg_cond_value + task_bonus) / (settings->task_bonus + 1.0);
         }
 
         assert(-1.0 <= value && value <= 1.0);
@@ -633,11 +679,47 @@ struct AssignedTask : public Task
     void on_game_end();
 
     int player;
-    const Settings &settings;
+    const Settings *settings;
     Status status;
     double value;
     bool in_one_trick;
     std::vector<std::shared_ptr<Condition>> conds;
+
+    AssignedTask(const AssignedTask &other)
+        : Task(other.formula, other.desc, other.difficulty, other.task_idx),
+          player(other.player),
+          settings(other.settings),
+          status(other.status),
+          value(other.value),
+          in_one_trick(other.in_one_trick)
+    {
+        // Deep copy the conditions
+        for (const auto &cond : other.conds)
+        {
+            conds.push_back(cond->clone());
+        }
+    }
+
+    AssignedTask &operator=(const AssignedTask &other)
+    {
+        if (this != &other)
+        {
+            Task::operator=(other);
+            player = other.player;
+            settings = other.settings;
+            status = other.status;
+            value = other.value;
+            in_one_trick = other.in_one_trick;
+
+            // Clear and deep copy the conditions
+            conds.clear();
+            for (const auto &cond : other.conds)
+            {
+                conds.push_back(cond->clone());
+            }
+        }
+        return *this;
+    }
 };
 
 inline const std::vector<std::tuple<std::string, std::string, int>> TASK_DEFS = {

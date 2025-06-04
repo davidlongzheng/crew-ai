@@ -46,6 +46,8 @@ struct Engine
     // Returns the valid actions for the current state.
     std::vector<Action> valid_actions() const;
 
+    void set_private(int player);
+
     Settings settings;
     State state;
 };

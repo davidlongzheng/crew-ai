@@ -20,6 +20,10 @@ def test_engine_initialization() -> None:
             use_trump_suit=True,
             use_signals=False,
             task_idxs=(0,),
+            use_drafting=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
         ),
         seed=42,
     )
@@ -27,7 +31,7 @@ def test_engine_initialization() -> None:
     # Check initial state
     assert engine.state.phase == "play"
     assert len(engine.state.hands) == 3
-    assert len(engine.state.actions) == 0
+    assert engine.state.last_action is None
     assert engine.state.trick == 0
     assert 0 <= engine.state.leader < 3
     assert engine.state.cur_player == engine.state.leader
@@ -43,6 +47,10 @@ def test_hand_generation() -> None:
             use_trump_suit=True,
             use_signals=False,
             task_idxs=(0,),
+            use_drafting=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
         ),
         seed=42,
     )
@@ -72,6 +80,10 @@ def test_valid_actions() -> None:
             use_trump_suit=True,
             use_signals=False,
             task_idxs=(0,),
+            use_drafting=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
         ),
         seed=42,
     )
@@ -94,6 +106,10 @@ def test_play_card() -> None:
             use_trump_suit=True,
             use_signals=False,
             task_idxs=(0,),
+            use_drafting=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
         ),
         seed=42,
     )
@@ -107,8 +123,8 @@ def test_play_card() -> None:
     engine.move(action)
 
     assert action.card not in engine.state.hands[initial_player]
-    assert len(engine.state.actions) == 1
-    assert engine.state.actions[0] == action
+    assert engine.state.last_action is not None
+    assert engine.state.last_action[2] == action
 
 
 def test_follow_suit() -> None:
@@ -122,6 +138,10 @@ def test_follow_suit() -> None:
             use_trump_suit=True,
             use_signals=False,
             task_idxs=(0,),
+            use_drafting=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
         ),
         seed=42,
     )
@@ -151,6 +171,10 @@ def test_full_hand(use_signals: bool) -> None:
         settings=Settings(
             use_signals=use_signals,
             task_idxs=(0,),
+            use_drafting=False,
+            min_difficulty=None,
+            max_difficulty=None,
+            max_num_tasks=None,
         ),
         seed=42,
     )
@@ -190,7 +214,8 @@ def test_full_hand(use_signals: bool) -> None:
             engine.move(action)
 
             assert action.card not in engine.state.hands[action.player]
-            assert engine.state.actions[-1] == action
+            assert engine.state.last_action is not None
+            assert engine.state.last_action[2] == action
 
             if turn_idx != engine.settings.num_players - 1:
                 assert len(
@@ -224,4 +249,4 @@ def test_draft() -> None:
         action = valid_actions[-1]
         engine.move(action)
 
-    print(engine.state.actions)
+    print(engine.state.last_action)

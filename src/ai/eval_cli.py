@@ -1,12 +1,12 @@
 from collections import defaultdict
 from pathlib import Path
+from typing import cast
 
 import click
 import torch
 
 import cpp_game
-from ai.actor import BatchActor, ModelBatchActor
-from ai.models import get_models
+from ai.models import PolicyValueModel, get_models
 from ai.rollout import do_batch_rollout_cpp
 from game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
 from game.tasks import Task, get_task_defs
@@ -152,12 +152,13 @@ def main(
         hp = settings_dict["hp"]
         # Override settings with the ones from the checkpoint.
         settings = settings_dict["settings"]
-        pv_model = get_models(hp, settings)["pv"]
-        pv_model.load_state_dict(state_dict["pv_model"])
-        actor: BatchActor | None = ModelBatchActor(pv_model)
+        pv_model: PolicyValueModel | None = cast(
+            PolicyValueModel, get_models(hp, settings)["pv"]
+        )
+        cast(PolicyValueModel, pv_model).load_state_dict(state_dict["pv_model"])
         argmax = True
     else:
-        actor = None
+        pv_model = None
         argmax = False
 
     if use_cache:
@@ -167,7 +168,7 @@ def main(
         cpp_settings = settings.to_cpp()
         batch_rollout = cpp_game.BatchRollout(cpp_settings, num_rollouts)
         td = do_batch_rollout_cpp(
-            batch_rollout, batch_seed=batch_seed, actor=actor, argmax=argmax
+            batch_rollout, batch_seed=batch_seed, pv_model=pv_model, argmax=argmax
         )
 
     N = len(td)

@@ -1,6 +1,7 @@
 import torch
 from tensordict import TensorDict
 
+import cpp_game
 from game.settings import Settings
 from lib.types import StrMap
 
@@ -97,3 +98,34 @@ def featurize(
         ),
         valid_actions=valid_actions_arr,
     )
+
+
+def featurize_cpp(
+    engines: list[cpp_game.Engine], featurizer: cpp_game.Featurizer
+) -> TensorDict:
+    featurizer.reset()
+    assert len(engines) <= featurizer.num_rollouts
+    for engine in engines:
+        featurizer.record_move_inputs(engine)
+    move_inps = featurizer.get_move_inputs()
+
+    inps = TensorDict(
+        hist=TensorDict(
+            player_idx=move_inps.hist_player_idx,
+            trick=move_inps.hist_trick,
+            action=move_inps.hist_action,
+            turn=move_inps.hist_turn,
+            phase=move_inps.hist_phase,
+        ),
+        private=TensorDict(
+            hand=move_inps.hand,
+            player_idx=move_inps.player_idx,
+            trick=move_inps.trick,
+            turn=move_inps.turn,
+            phase=move_inps.phase,
+            task_idxs=move_inps.task_idxs,
+        ),
+        valid_actions=move_inps.valid_actions,
+    )
+    inps.auto_batch_size_()
+    return inps[: len(engines)]

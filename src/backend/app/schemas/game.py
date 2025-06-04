@@ -77,14 +77,6 @@ class EndedGame(ServerMessageBase):
     seqnum: int
 
 
-class TrickWon(ServerMessageBase):
-    type: Literal["trick_won"] = "trick_won"
-    room_id: str
-    seqnum: int
-    trick_winner: int
-    trick: int
-
-
 ServerMessage = Annotated[
     Union[
         ConnectAck,
@@ -95,7 +87,6 @@ ServerMessage = Annotated[
         StartedGame,
         Moved,
         EndedGame,
-        TrickWon,
     ],
     Field(discriminator="type"),
 ]

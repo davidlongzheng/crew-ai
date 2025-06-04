@@ -33,7 +33,7 @@ def test_batch_rollout_cpp(signal_mode, use_drafting, use_difficulty_distro):
         num_difficulties = settings.max_difficulty - settings.min_difficulty + 1
         probs = np.arange(num_difficulties)
         probs = probs / probs.sum()
-        kwargs["difficulty_distro"] = probs.tolist()
+        kwargs["difficulty_distro"] = tuple(probs.tolist())
     settings = replace(settings, **kwargs)
     cpp_settings = settings.to_cpp()
     num_rollouts = 250
@@ -106,7 +106,7 @@ def test_batch_rollout_cpp(signal_mode, use_drafting, use_difficulty_distro):
 
 
 def test_rollout_draft():
-    settings = get_preset("med")
+    settings = get_preset(DEFAULT_PRESET)
     do_batch_rollout(
         settings,
         num_rollouts=1,
