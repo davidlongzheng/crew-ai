@@ -288,7 +288,7 @@ const GameArea = ({
                     : "border-white opacity-50"
                 }`}
             >
-              <div className="text-xs font-['Press_Start_2P'] text-white">
+              <div className="text-[10px] font-['Press_Start_2P'] text-white">
                 {formatCardText(tasks[taskIdx].desc)}
               </div>
               <div className="text-[10px] font-['Press_Start_2P'] text-[#95a5a6] mt-0.5">
