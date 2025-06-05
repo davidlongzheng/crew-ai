@@ -141,7 +141,7 @@ PYBIND11_MODULE(cpp_game, m)
         .def("calc_trick_winner", &Engine::calc_trick_winner)
         .def("move", &Engine::move)
         .def("valid_actions", &Engine::valid_actions)
-        .def_readonly("state", &Engine::state);
+        .def_readwrite("state", &Engine::state);
 
     // Bind utils functions
     m.def("split_by_suit", &split_by_suit, "Split a hand of cards by suit");

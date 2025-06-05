@@ -1,9 +1,11 @@
 import random
 import time
+from dataclasses import replace
 
 from fastapi import WebSocket
 from loguru import logger
 
+import cpp_game
 from ai.ai import AI, get_ai, supports_ai
 from backend.app.schemas.game import (
     AddAi,
@@ -29,6 +31,7 @@ from game.engine import Engine
 from game.settings import Settings
 from game.tasks import Task
 from game.types import Action
+from game.utils import to_cpp_action, to_py_action
 
 
 class GameRoom:
@@ -210,28 +213,34 @@ class GameRoom:
             min_difficulty=self.difficulty,
             max_difficulty=self.difficulty,
             max_num_tasks=8,
-            use_signals=True,
+            use_signals=False,
             bank="all",
             use_drafting=True,
         )
-        if any(x.startswith("ai_") for x in self.player_uids):
-            try:
-                self.ai = get_ai(settings)
-            except ValueError:
-                logger.error(f"Unsupported AI settings: {settings}")
-                return None
-            self.ai_state = self.ai.new_rollout()
-        else:
-            self.ai = None
-            self.ai_state = None
-
         self.settings = settings
         self.stage = "play"
-        self.engine = Engine(self.settings, use_py_rng=True)
-        self.engine.reset_state()
+        self.engine = Engine(settings)
+        seed = random.randint(1, 1_000_000_000)
+        self.engine.reset_state(seed)
         self.players = list(range(self.settings.num_players))
         random.shuffle(self.players)
         self.players = self.players[: len(self.player_uids)]
+
+        if any(x.startswith("ai_") for x in self.player_uids):
+            ai_settings = replace(settings, use_signals=False)
+            try:
+                self.ai = get_ai(ai_settings)
+            except ValueError:
+                logger.error(f"Unsupported AI settings: {settings}")
+                return None
+            self.ai_engine = cpp_game.Engine(ai_settings.to_cpp())
+            self.ai_engine.reset_state(seed)
+            assert self.engine.state.task_idxs == self.ai_engine.state.task_idxs
+            self.ai_state = self.ai.new_rollout()
+        else:
+            self.ai = None
+            self.ai_engine = None
+            self.ai_state = None
 
         msgs = []
         self.seqnum += 1
@@ -249,14 +258,17 @@ class GameRoom:
         msgs.extend(self.auto_move())
         return msgs
 
-    def engine_move(self, action=None):
+    def engine_move(self, action):
         if self.ai is not None:
-            ai_action = self.ai.get_move(self.engine, self.ai_state)
+            ai_action = to_py_action(self.ai.get_move(self.ai_engine, self.ai_state))
             if action == "ai":
                 action = ai_action
 
         msgs = []
+        phase = self.engine.state.phase
         self.engine.move(action)
+        if self.ai_engine and phase != "signal":
+            self.ai_engine.move(to_cpp_action(action))
         self.seqnum += 1
         msgs.append(
             Moved(

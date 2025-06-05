@@ -2,6 +2,7 @@ from typing import cast
 
 import torch
 
+import cpp_game
 from game.settings import Settings
 from game.state import State
 from game.types import Action, Card
@@ -121,3 +122,37 @@ def get_splits_and_phases(settings, as_phase_index=True):
         assert all(0 <= x < settings.num_phases for x in phases)
 
     return splits, phases
+
+
+def to_cpp_card(card):
+    return cpp_game.Card(card.rank, card.suit)
+
+
+def to_cpp_action(action):
+    return cpp_game.Action(
+        action.player,
+        to_cpp_action_type(action.type),
+        to_cpp_card(action.card) if action.card else None,
+        action.task_idx,
+    )
+
+
+def to_cpp_action_type(action_type):
+    return getattr(cpp_game.ActionType, action_type)
+
+
+def to_py_card(cpp_card):
+    return Card(rank=cpp_card.rank, suit=cpp_card.suit)
+
+
+def to_py_action(cpp_action):
+    return Action(
+        player=cpp_action.player,
+        type=to_py_action_type(cpp_action.type),
+        card=to_py_card(cpp_action.card) if cpp_action.card else None,
+        task_idx=cpp_action.task_idx,
+    )
+
+
+def to_py_action_type(cpp_action_type):
+    return cpp_action_type.name
