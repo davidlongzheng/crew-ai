@@ -267,7 +267,7 @@ export default function GamePageWithLoading() {
           return;
         }
 
-        const response = await fetch("http://localhost:8000/game/set_uid", {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/game/set_uid`, {
           method: "POST",
         });
         const data = await response.json();
