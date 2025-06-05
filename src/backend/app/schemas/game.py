@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from game.state import State
 from game.tasks import Task
-from game.types import Action
+from game.types import Action, Card
 
 
 class ServerMessageBase(BaseModel):
@@ -19,7 +19,7 @@ class ConnectAck(ServerMessageBase):
 
 class FullState(ServerMessageBase):
     type: Literal["full_state"] = "full_state"
-    seqnum: int
+    start_seqnum: int
     stage: str
     player_uids: list[str]
     handles: list[str]
@@ -27,6 +27,7 @@ class FullState(ServerMessageBase):
     cur_uid: str | None
     engine_state: State | None
     valid_actions: list[Action] | None
+    active_cards: list[tuple[Card, int]]
     tasks: dict[int, Task] | None
     num_players: int
     difficulty: int
@@ -70,11 +71,17 @@ class Moved(ServerMessageBase):
     cur_uid: str | None
     engine_state: State
     valid_actions: list[Action] | None
+    active_cards: list[tuple[Card, int]]
 
 
 class EndedGame(ServerMessageBase):
     type: Literal["ended_game"] = "ended_game"
     seqnum: int
+
+
+class Error(ServerMessageBase):
+    type: Literal["error"] = "error"
+    message: str
 
 
 ServerMessage = Annotated[
@@ -87,6 +94,7 @@ ServerMessage = Annotated[
         StartedGame,
         Moved,
         EndedGame,
+        Error,
     ],
     Field(discriminator="type"),
 ]

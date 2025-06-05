@@ -1,3 +1,4 @@
+import asyncio
 import random
 import time
 from dataclasses import replace
@@ -13,6 +14,7 @@ from backend.app.schemas.game import (
     ConnectAck,
     EndedGame,
     EndGame,
+    Error,
     FullState,
     FullSync,
     JoinedGame,
@@ -30,7 +32,7 @@ from backend.app.schemas.game import (
 from game.engine import Engine
 from game.settings import Settings
 from game.tasks import Task
-from game.types import Action
+from game.types import Action, Card
 from game.utils import to_cpp_action, to_py_action
 
 
@@ -50,10 +52,11 @@ class GameRoom:
         self.difficulty: int = 7
         self.ai: AI | None = None
         self.ai_state: dict | None = None
+        self.active_cards: list[tuple[Card, int]] = []
 
     def get_full_state(self) -> FullState:
         return FullState(
-            seqnum=self.seqnum,
+            start_seqnum=self.seqnum,
             room_id=self.room_id,
             stage=self.stage,
             player_uids=self.player_uids,
@@ -65,6 +68,7 @@ class GameRoom:
             tasks=self.tasks,
             num_players=self.num_players,
             difficulty=self.difficulty,
+            active_cards=self.active_cards,
         )
 
     @property
@@ -110,10 +114,18 @@ class GameRoom:
 
         return ret
 
-    def set_settings(self, num_players: int | None, difficulty: int | None):
+    async def set_settings(
+        self, num_players: int | None, difficulty: int | None, websocket: WebSocket
+    ):
         if self.stage != "lobby":
             logger.error(f"Trying to set settings but stage {self.stage} is not lobby.")
-            return None
+            await self.send(
+                websocket,
+                Error(
+                    room_id=self.room_id, message="Cannot set settings outside of lobby"
+                ),
+            )
+            return
 
         if num_players is not None:
             self.num_players = num_players
@@ -122,25 +134,37 @@ class GameRoom:
             self.difficulty = difficulty
 
         self.seqnum += 1
-        return SettingsUpdated(
-            room_id=self.room_id,
-            seqnum=self.seqnum,
-            num_players=num_players,
-            difficulty=difficulty,
+        await self.broadcast(
+            SettingsUpdated(
+                room_id=self.room_id,
+                seqnum=self.seqnum,
+                num_players=num_players,
+                difficulty=difficulty,
+            )
         )
 
-    def add_ai(self):
+    async def add_ai(self, websocket: WebSocket):
         if self.stage != "lobby":
             logger.error(f"Trying to add ai but stage {self.stage} is not lobby.")
-            return None
+            await self.send(
+                websocket,
+                Error(room_id=self.room_id, message="Cannot add AI outside of lobby"),
+            )
+            return
 
         if len(self.player_uids) >= 5:
             logger.error("Trying to add ai but too many players.")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Too many players")
+            )
+            return
 
         if not supports_ai():
             logger.error("Do not support AI.")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="AI not supported")
+            )
+            return
 
         i = 0
         while True:
@@ -153,59 +177,95 @@ class GameRoom:
         self.player_uids.append(uid)
         self.handles.append(handle)
         self.seqnum += 1
-        return JoinedGame(
-            room_id=self.room_id, seqnum=self.seqnum, uid=uid, handle=handle
+        await self.broadcast(
+            JoinedGame(room_id=self.room_id, seqnum=self.seqnum, uid=uid, handle=handle)
         )
 
-    def join_game(self, uid: str, handle: str):
+    async def join_game(self, uid: str, handle: str, websocket: WebSocket):
         if self.stage != "lobby":
             logger.error(f"Trying to join game but stage {self.stage} is not lobby.")
-            return None
+            await self.send(
+                websocket,
+                Error(
+                    room_id=self.room_id, message="Cannot join game outside of lobby"
+                ),
+            )
+            return
 
         if uid in self.player_uids:
             logger.error(f"Trying to join game but uid {uid} already joined.")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Already joined")
+            )
+            return
 
         if handle in self.handles:
             logger.error(f"Trying to join game but handle {handle} already taken.")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Handle already taken")
+            )
+            return
 
         if len(self.player_uids) >= 5:
             logger.error("Trying to join game but too many players.")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Too many players")
+            )
+            return
 
         self.player_uids.append(uid)
         self.handles.append(handle)
         self.seqnum += 1
-        return JoinedGame(
-            room_id=self.room_id, seqnum=self.seqnum, uid=uid, handle=handle
+        await self.broadcast(
+            JoinedGame(room_id=self.room_id, seqnum=self.seqnum, uid=uid, handle=handle)
         )
 
-    def kick_player(self, handle: str):
+    async def kick_player(self, handle: str, websocket: WebSocket):
         if self.stage != "lobby":
             logger.error(f"Trying to kick player but stage {self.stage} is not lobby")
-            return None
+            await self.send(
+                websocket,
+                Error(
+                    room_id=self.room_id, message="Cannot kick player outside of lobby"
+                ),
+            )
+            return
 
         if handle not in self.handles:
             logger.error(f"Trying to kick player but handle {handle} doesn't exist.")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Player not found")
+            )
+            return
 
         i = self.handles.index(handle)
         uid = self.player_uids[i]
         del self.player_uids[i]
         del self.handles[i]
         self.seqnum += 1
-        return KickedPlayer(
-            room_id=self.room_id, seqnum=self.seqnum, handle=handle, uid=uid
+        await self.broadcast(
+            KickedPlayer(
+                room_id=self.room_id, seqnum=self.seqnum, handle=handle, uid=uid
+            )
         )
 
-    def start_game(self):
+    async def start_game(self, websocket: WebSocket):
         if len(self.player_uids) == 0:
             logger.error("Trying to start game but no players joined.")
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="No players joined")
+            )
             return None
 
         if len(self.player_uids) != self.num_players:
             logger.error("Trying to start game but the wrong number of players joined.")
+            await self.send(
+                websocket,
+                Error(
+                    room_id=self.room_id,
+                    message=f"Need {self.num_players} players, have {len(self.player_uids)}",
+                ),
+            )
             return None
 
         settings = Settings(
@@ -213,10 +273,23 @@ class GameRoom:
             min_difficulty=self.difficulty,
             max_difficulty=self.difficulty,
             max_num_tasks=8,
-            use_signals=False,
+            use_signals=True,
             bank="all",
             use_drafting=True,
         )
+        use_ai = any(x.startswith("ai_") for x in self.player_uids)
+        if use_ai:
+            ai_settings = replace(settings, use_signals=False)
+            try:
+                ai = get_ai(ai_settings)
+            except ValueError:
+                logger.error(f"Unsupported AI settings: {settings}")
+                await self.send(
+                    websocket,
+                    Error(room_id=self.room_id, message="Unsupported AI settings"),
+                )
+                return None
+
         self.settings = settings
         self.stage = "play"
         self.engine = Engine(settings)
@@ -225,14 +298,10 @@ class GameRoom:
         self.players = list(range(self.settings.num_players))
         random.shuffle(self.players)
         self.players = self.players[: len(self.player_uids)]
+        self.active_cards = []
 
-        if any(x.startswith("ai_") for x in self.player_uids):
-            ai_settings = replace(settings, use_signals=False)
-            try:
-                self.ai = get_ai(ai_settings)
-            except ValueError:
-                logger.error(f"Unsupported AI settings: {settings}")
-                return None
+        if use_ai:
+            self.ai = ai
             self.ai_engine = cpp_game.Engine(ai_settings.to_cpp())
             self.ai_engine.reset_state(seed)
             assert self.engine.state.task_idxs == self.ai_engine.state.task_idxs
@@ -242,9 +311,8 @@ class GameRoom:
             self.ai_engine = None
             self.ai_state = None
 
-        msgs = []
         self.seqnum += 1
-        msgs.append(
+        await self.broadcast(
             StartedGame(
                 room_id=self.room_id,
                 seqnum=self.seqnum,
@@ -255,96 +323,119 @@ class GameRoom:
                 tasks=self.tasks,
             )
         )
-        msgs.extend(self.auto_move())
-        return msgs
+        await self.auto_move()
 
-    def engine_move(self, action):
+    async def engine_move(self, action):
+        is_signal_phase = self.engine.state.phase == "signal"
         if self.ai is not None:
-            ai_action = to_py_action(self.ai.get_move(self.ai_engine, self.ai_state))
+            start_time = time.time()
+            if is_signal_phase:
+                ai_action = Action(self.engine.state.cur_player, "nosignal")
+            else:
+                ai_action = to_py_action(
+                    self.ai.get_move(self.ai_engine, self.ai_state)
+                )
+
             if action == "ai":
                 action = ai_action
+                elapsed = time.time() - start_time
+                sleep_time = 2
+                if elapsed < sleep_time:
+                    await asyncio.sleep(sleep_time - elapsed)
 
-        msgs = []
-        phase = self.engine.state.phase
         self.engine.move(action)
-        if self.ai_engine and phase != "signal":
+        if self.ai_engine and not is_signal_phase:
             self.ai_engine.move(to_cpp_action(action))
-        self.seqnum += 1
-        msgs.append(
-            Moved(
-                room_id=self.room_id,
-                seqnum=self.seqnum,
-                action=action,
-                cur_uid=self.cur_uid,
-                engine_state=self.engine.state,
-                valid_actions=self.valid_actions,
-            )
-        )
-        return msgs
+        if self.engine.state.active_cards:
+            self.active_cards = self.engine.state.active_cards
 
-    def auto_move(self):
+        self.seqnum += 1
+        msg = Moved(
+            room_id=self.room_id,
+            seqnum=self.seqnum,
+            action=action,
+            cur_uid=self.cur_uid,
+            engine_state=self.engine.state,
+            valid_actions=self.valid_actions,
+            active_cards=self.active_cards,
+        )
+        await self.broadcast(msg)
+
+    async def auto_move(self):
         assert self.engine is not None
-        msgs = []
 
         while self.engine.state.phase != "end":
             valid_actions = self.engine.valid_actions()
-            if self.cur_uid.startswith("ai_"):
-                msgs.extend(self.engine_move("ai"))
-            elif len(valid_actions) == 1 and valid_actions[0].type in [
+            if len(valid_actions) == 1 and valid_actions[0].type in [
                 "nodraft",
                 "nosignal",
             ]:
-                msgs.extend(self.engine_move(valid_actions[0]))
+                await self.engine_move(valid_actions[0])
+            elif self.cur_uid.startswith("ai_"):
+                await self.engine_move("ai")
             else:
                 break
-        return msgs
 
-    def move(self, action: Action, uid: str):
+    async def move(self, action: Action, uid: str, websocket: WebSocket):
         if self.stage != "play":
             logger.error(f"Trying to move but stage {self.stage} is not play")
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Game is not in play")
+            )
             return None
 
         assert self.engine is not None
 
         if self.engine.state.phase == "end":
             logger.error("Trying to move but game has ended")
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Game has ended")
+            )
             return None
 
         if uid not in self.player_uids:
             logger.error(f"Trying to move but uid {uid} is not a player")
+            await self.send(
+                websocket,
+                Error(room_id=self.room_id, message="Not a player in this game"),
+            )
             return None
 
         if uid != self.cur_uid:
             logger.error(f"Trying to move but uid {uid} is not cur_uid {self.cur_uid}")
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Not your turn")
+            )
             return None
 
         valid_actions = self.engine.valid_actions()
         if action not in valid_actions:
             logger.error(f"Trying to move but action {action} is invalid.")
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Invalid action")
+            )
             return None
-
-        msgs = []
 
         # Make the move
-        msgs.extend(self.engine_move(action))
+        await self.engine_move(action)
 
         # Continue with auto moves
-        msgs.extend(self.auto_move())
+        await self.auto_move()
 
-        return msgs
-
-    def end_game(self):
+    async def end_game(self, websocket: WebSocket):
         if self.stage != "play":
             logger.error(f"Trying to end game but stage {self.stage} is not play")
-            return None
+            await self.send(
+                websocket, Error(room_id=self.room_id, message="Game is not in play")
+            )
+            return
 
         assert self.engine is not None
 
         self.stage = "lobby"
-        self.engine.reset_state()
         self.players = []
         self.seqnum += 1
-        return EndedGame(room_id=self.room_id, seqnum=self.seqnum)
+        await self.broadcast(EndedGame(room_id=self.room_id, seqnum=self.seqnum))
 
     async def connect(self, websocket: WebSocket, uid: str) -> None:
         await websocket.accept()
@@ -358,28 +449,22 @@ class GameRoom:
         match message:
             case FullSync():
                 await self.send(websocket, self.get_full_state())
-                resp = None
             case JoinGame():
-                resp = self.join_game(uid, message.handle)
+                await self.join_game(uid, message.handle, websocket)
             case KickPlayer():
-                resp = self.kick_player(message.handle)
+                await self.kick_player(message.handle, websocket)
             case SetSettings():
-                resp = self.set_settings(message.num_players, message.difficulty)
+                await self.set_settings(
+                    message.num_players, message.difficulty, websocket
+                )
             case AddAi():
-                resp = self.add_ai()
+                await self.add_ai(websocket)
             case StartGame():
-                resp = self.start_game()
+                await self.start_game(websocket)
             case Move():
-                resp = self.move(message.action, uid)
+                await self.move(message.action, uid, websocket)
             case EndGame():
-                resp = self.end_game()
-
-        if resp is not None:
-            if isinstance(resp, list):
-                for r in resp:
-                    await self.broadcast(r)
-            else:
-                await self.broadcast(resp)
+                await self.end_game(websocket)
 
         self.last_update_time = time.time()
 

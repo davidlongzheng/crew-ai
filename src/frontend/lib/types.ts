@@ -69,6 +69,7 @@ export interface GameState {
   cur_uid: string | null;
   engine_state: EngineState | null;
   valid_actions: Action[] | null;
+  active_cards: [Card, number][];
   tasks: Record<number, Task> | null;
   num_players: number;
   difficulty: number;
@@ -76,6 +77,7 @@ export interface GameState {
 
 export interface ServerMessage {
   type: string;
+  start_seqnum?: number;
   seqnum?: number;
   uid?: string;
   handle?: string;
@@ -86,11 +88,13 @@ export interface ServerMessage {
   cur_uid?: string | null;
   engine_state?: EngineState;
   valid_actions?: Action[] | null;
+  active_cards?: [Card, number][];
   tasks?: Record<number, Task> | null;
   num_players?: number;
   difficulty?: number;
   trick_winner?: number;
   trick?: number;
+  message?: string;
 }
 
 export interface ClientMessage {
@@ -131,6 +135,15 @@ export const TO_SUIT_LETTER: Record<number, string> = {
   3: "y",
   4: "t",
 };
+
+export const TO_SUIT_NUM: Record<string, number> = {
+  "b": 0,
+  "g": 1,
+  "p": 2,
+  "y": 3,
+  "t": 4,
+};
+
 
 export function card_to_string(card: Card): string {
   return `${card.rank}${TO_SUIT_LETTER[card.suit]}`;
