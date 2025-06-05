@@ -1,6 +1,7 @@
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-import torch
+if TYPE_CHECKING:
+    import torch
 
 import cpp_game
 from game.settings import Settings
@@ -22,13 +23,13 @@ def split_by_suit(hand: list[Card]) -> list[list[Card]]:
     return ret
 
 
-def to_card(arr: torch.Tensor, settings) -> Card:
+def to_card(arr: "torch.Tensor", settings) -> Card:
     rank = int(arr[0].item()) + 1
     suit = settings.get_suit(int(arr[1].item()))
     return Card(rank, suit)
 
 
-def to_action(arr: torch.Tensor, phase_idx: int, player: int, settings) -> Action:
+def to_action(arr: "torch.Tensor", phase_idx: int, player: int, settings) -> Action:
     phase = settings.get_phase(phase_idx)
     if phase == "draft":
         if arr[0].item() == settings.num_task_defs:
@@ -46,7 +47,7 @@ def to_action(arr: torch.Tensor, phase_idx: int, player: int, settings) -> Actio
         raise ValueError(phase)
 
 
-def to_hand(arr: torch.Tensor, settings) -> list[Card]:
+def to_hand(arr: "torch.Tensor", settings) -> list[Card]:
     return [to_card(x, settings) for x in arr if x[0].item() != -1]
 
 

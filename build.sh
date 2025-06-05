@@ -2,7 +2,9 @@
 
 set -euxo pipefail
 
-source venv/bin/activate
+if [ -d "venv" ]; then
+    source venv/bin/activate
+fi
 mkdir -p build
 
 cd build

@@ -19,7 +19,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Find Python interpreter
 # Needed for pybind11
-set(Python_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/venv/bin/python")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/venv/bin/python")
+    set(Python_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/venv/bin/python")
+endif()
 find_package(Python 3.12 COMPONENTS Interpreter Development REQUIRED)
 
 # Add pybind11 subdirectory

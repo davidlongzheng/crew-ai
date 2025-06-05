@@ -1,12 +1,12 @@
 from __future__ import absolute_import, annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Literal, cast
 
 import click
-import numpy as np
 
 from game.types import TRUMP_SUIT_NUM, Card
 from lib.utils import coerce_string
@@ -70,7 +70,7 @@ class Settings:
                 len(self.difficulty_distro)
                 == self.max_difficulty - self.min_difficulty + 1
             )
-            assert np.isclose(sum(self.difficulty_distro), 1.0)
+            assert math.isclose(sum(self.difficulty_distro), 1.0)
 
         if self.use_drafting:
             assert self.num_draft_tricks > 0

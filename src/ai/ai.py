@@ -149,10 +149,6 @@ def get_ai(
         raise ValueError(f"Unsupported settings for AI: {settings}")
 
 
-def supports_ai():
-    return Path("/Users/davidzheng/projects/crew-ai/outdirs").exists()
-
-
 def batch_rollout(engines, ai, seeds=None, use_tree_search=False):
     assert seeds is None or len(engines) == len(seeds)
     for i, engine in enumerate(engines):
