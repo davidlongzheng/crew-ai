@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Callable, cast
 
 import torch
-from tensordict import TensorDict
 from torch import Tensor, nn
 
 from ai.embedding import (
@@ -112,6 +111,7 @@ class HistoryModel(nn.Module):
         dropout: float,
         tasks_embed_dim: int,
         phase_branch: bool,
+        onnx: bool,
         settings: Settings,
     ):
         super().__init__()
@@ -121,6 +121,9 @@ class HistoryModel(nn.Module):
         self.turn_embed = turn_embed
         self.phase_embed = None if phase_branch else phase_embed
         self.phase_branch = phase_branch
+        self.onnx = onnx
+        if self.onnx:
+            assert not phase_branch
         input_dim = (4 if phase_branch else 5) * embed_dim + tasks_embed_dim
 
         self.layer_norm = nn.LayerNorm(input_dim)
@@ -128,7 +131,7 @@ class HistoryModel(nn.Module):
             input_size=input_dim,
             hidden_size=hidden_dim,
             num_layers=num_layers,
-            batch_first=True,
+            batch_first=not self.onnx,
             dropout=(dropout if num_layers > 1 else 0.0),
         )
         if phase_branch:
@@ -153,15 +156,21 @@ class HistoryModel(nn.Module):
         self.single_step = False
         self.state = None
 
-    def forward(
+    def _forward(
         self,
-        hist_inps: TensorDict,
-        tasks_embed: Tensor,
-    ) -> Tensor:
-        player_embed = self.player_embed(hist_inps["player_idx"])
-        trick_embed = self.trick_embed(hist_inps["trick"], hist_inps["phase"])
-        action_embed = self.action_embed(hist_inps["action"], self.single_step)
-        turn_embed = self.turn_embed(hist_inps["turn"])
+        hist_player_idx,
+        hist_trick,
+        hist_action,
+        hist_turn,
+        hist_phase,
+        tasks_embed,
+        h=None,
+        c=None,
+    ):
+        player_embed = self.player_embed(hist_player_idx)
+        trick_embed = self.trick_embed(hist_trick, hist_phase)
+        action_embed = self.action_embed(hist_action, self.single_step)
+        turn_embed = self.turn_embed(hist_turn)
         inps = [
             player_embed,
             trick_embed,
@@ -170,7 +179,7 @@ class HistoryModel(nn.Module):
             tasks_embed,
         ]
         if not self.phase_branch:
-            phase_embed = cast(nn.Module, self.phase_embed)(hist_inps["phase"])
+            phase_embed = cast(nn.Module, self.phase_embed)(hist_phase)
             inps.append(phase_embed)
         x = torch.cat(inps, dim=-1)
         if self.single_step:
@@ -182,29 +191,84 @@ class HistoryModel(nn.Module):
                 "Forgot to stop_single_step() before going back to multi-step mode."
             )
 
+        if self.onnx:
+            assert h is not None and c is not None
+            assert self.state is None
+            state = (h, c)
+        else:
+            assert h is None and c is None
+            state = self.state
+
         x = self.layer_norm(x)
 
         if self.single_step:
-            x = x.unsqueeze(dim=-2)
+            x = x.unsqueeze(dim=0 if self.onnx else -2)
 
         if self.phase_branch:
-            x, state = self.lstm(x, self.state, hist_inps["phase"], self.single_step)
+            x, state = self.lstm(x, state, hist_phase, self.single_step)
         else:
-            x, state = self.lstm(x, self.state)
+            x, state = self.lstm(x, state)
 
         if self.single_step:
-            x = x.squeeze(dim=-2)
+            x = x.squeeze(dim=0 if self.onnx else -2)
 
         # Only save state if we are using the model one action
         # at a time.
-        if self.single_step:
+        if self.single_step and not self.onnx:
             self.state = state
 
         x = self.fc(x)
 
         if self.dropout:
             x = self.dropout(x)
-        return x
+
+        if self.onnx:
+            h, c = state
+            return (x, h, c)
+        else:
+            return x
+
+    def forward(
+        self,
+        *args,
+    ) -> Tensor:
+        if self.onnx:
+            assert self.single_step
+            (
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                tasks_embed,
+                h,
+                c,
+            ) = args
+            return self._forward(
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                tasks_embed,
+                h,
+                c,
+            )
+        else:
+            hist_inps, tasks_embed = args
+            hist_player_idx = hist_inps["player_idx"]
+            hist_trick = hist_inps["trick"]
+            hist_action = hist_inps["action"]
+            hist_turn = hist_inps["turn"]
+            hist_phase = hist_inps["phase"]
+            return self._forward(
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                tasks_embed,
+            )
 
 
 class BackboneModel(nn.Module):
@@ -223,6 +287,7 @@ class BackboneModel(nn.Module):
         output_dim: int,
         dropout: float,
         phase_branch: bool,
+        onnx: bool,
         settings: Settings,
     ):
         super().__init__()
@@ -235,6 +300,7 @@ class BackboneModel(nn.Module):
         self.phase_embed = None if phase_branch else phase_embed
         self.tasks_embed = tasks_embed
         self.output_dim = output_dim + self.hist_model.output_dim
+        self.onnx = onnx
         input_dim = (
             self.hist_model.output_dim
             + embed_dim * (3 if phase_branch else 4)
@@ -250,6 +316,7 @@ class BackboneModel(nn.Module):
             dropout=dropout,
         )
         if phase_branch:
+            assert not self.onnx
             self.mlp: nn.Module = BranchedFF(make_mlp, output_dim, settings)
         else:
             self.mlp = make_mlp()
@@ -260,17 +327,20 @@ class BackboneModel(nn.Module):
     def mlp_params(self):
         return list(self.mlp.parameters())
 
-    def forward(
+    def _forward(
         self,
-        hist_inps: TensorDict,
-        private_inps: TensorDict,
-    ) -> Tensor:
-        tasks_embed = self.tasks_embed(private_inps["task_idxs"])
-        hist_embed: Tensor = self.hist_model(hist_inps, tasks_embed)
-        hand_embed: Tensor = self.hand_embed(private_inps["hand"])
-        player_embed = self.player_embed(private_inps["player_idx"])
-        trick_embed = self.trick_embed(private_inps["trick"], private_inps["phase"])
-        turn_embed = self.turn_embed(private_inps["turn"])
+        tasks_embed,
+        hist_embed,
+        hand: Tensor,
+        player_idx,
+        trick,
+        phase,
+        turn,
+    ):
+        hand_embed: Tensor = self.hand_embed(hand)
+        player_embed = self.player_embed(player_idx)
+        trick_embed = self.trick_embed(trick, phase)
+        turn_embed = self.turn_embed(turn)
         inps = [
             hist_embed,
             player_embed,
@@ -280,13 +350,13 @@ class BackboneModel(nn.Module):
             hand_embed,
         ]
         if not self.phase_branch:
-            phase_embed = cast(nn.Module, self.phase_embed)(private_inps["phase"])
+            phase_embed = cast(nn.Module, self.phase_embed)(phase)
             inps.append(phase_embed)
 
         x = torch.cat(inps, dim=-1)
         x = self.layer_norm(x)
         if self.phase_branch:
-            x = self.mlp(x, private_inps["phase"])
+            x = self.mlp(x, phase)
         else:
             x = self.mlp(x)
         if self.final_layer_norm:
@@ -294,6 +364,64 @@ class BackboneModel(nn.Module):
         x = torch.cat([x, hist_embed], dim=-1)
 
         return x
+
+    def forward(
+        self,
+        *args,
+    ):
+        if self.onnx:
+            (
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                hand,
+                player_idx,
+                trick,
+                turn,
+                phase,
+                task_idxs,
+                h,
+                c,
+            ) = args
+            tasks_embed = self.tasks_embed(task_idxs)
+            hist_embed, h, c = self.hist_model(
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                tasks_embed,
+                h,
+                c,
+            )
+            return (
+                self._forward(
+                    tasks_embed,
+                    hist_embed,
+                    hand,
+                    player_idx,
+                    trick,
+                    phase,
+                    turn,
+                ),
+                h,
+                c,
+            )
+        else:
+            hist_inps, private_inps = args
+            tasks_embed = self.tasks_embed(private_inps["task_idxs"])
+            hist_embed = self.hist_model(hist_inps, tasks_embed)
+            return self._forward(
+                tasks_embed,
+                hist_embed,
+                private_inps["hand"],
+                private_inps["player_idx"],
+                private_inps["trick"],
+                private_inps["phase"],
+                private_inps["turn"],
+            )
 
 
 class PolicyHead(nn.Module):
@@ -504,9 +632,10 @@ class PolicyValueModel(nn.Module):
 def get_models(
     hp: Hyperparams,
     settings: Settings,
+    onnx: bool = False,
 ) -> dict[str, nn.Module]:
     ret: dict[str, nn.Module] = {}
-    embed_models = get_embed_models(hp, settings)
+    embed_models = get_embed_models(hp, settings, onnx=onnx)
     hist_model = HistoryModel(
         embed_models["player"],
         embed_models["trick"],
@@ -520,6 +649,7 @@ def get_models(
         hp.hist_dropout,
         hp.tasks_embed_dim,
         hp.hist_phase_branch,
+        onnx,
         settings,
     )
     backbone_model = BackboneModel(
@@ -536,6 +666,7 @@ def get_models(
         hp.backbone_output_dim,
         hp.backbone_dropout,
         hp.backbone_phase_branch,
+        onnx,
         settings,
     )
     if hp.aux_info_coef:

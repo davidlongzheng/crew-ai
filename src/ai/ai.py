@@ -139,8 +139,7 @@ def get_ai(
         and settings.max_num_tasks == 8
     ):
         for path in [
-            Path("/Users/davidzheng/projects/crew-ai/outdirs/0525/run_7"),
-            Path("/root/outdirs/0531/run_2"),
+            Path("/Users/davidzheng/projects/crew-ai/outdirs/0531/run_16"),
         ]:
             if path.exists():
                 return _get_ai_by_path(path, ts_settings, num_rollouts)
