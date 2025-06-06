@@ -10,3 +10,8 @@ cpp_lib/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+**/frontend
+**/__pycache__
+.git/
+.vscode/
+.claude/
