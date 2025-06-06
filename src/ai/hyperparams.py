@@ -3,14 +3,12 @@ import re
 from dataclasses import dataclass
 
 import click
-import torch
 
 from lib.utils import coerce_string
 
 
 @dataclass(frozen=True, kw_only=True)
 class Hyperparams:
-    float_dtype: torch.dtype = torch.float32
     # Use torch.profile
     use_profile: bool = False
     # Profile memory at key points.
@@ -124,9 +122,6 @@ class HyperparamsType(click.ParamType):
                 if re.match(batch_regex, field.name) and field.name not in kwargs:
                     kwargs[field.name] = kwargs[batch_alias]
             kwargs.pop(batch_alias)
-
-        if "float_dtype" in kwargs:
-            kwargs["float_dtype"] = getattr(torch, kwargs["float_dtype"])
 
         return Hyperparams(**kwargs)
 

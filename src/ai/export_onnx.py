@@ -5,6 +5,9 @@ This script exports a trained PolicyValueModel to ONNX format with validation.
 Replicates the functionality of the gen_model() function with user-specified paths.
 """
 
+import pickle
+import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 import click
@@ -14,14 +17,15 @@ import torch
 from tensordict import TensorDict
 
 import cpp_game
-from ai.ai import load_ort_model
+from ai.ai import init_lstm_state, load_ort_model
+from ai.hyperparams import Hyperparams
 from ai.models import load_model_for_eval
 
 
 def validate_model(model_path):
     click.echo("Validating")
     model, settings, hp = load_model_for_eval(model_path, onnx=False)
-    ort_model = load_ort_model(model_path)
+    ort_model, _, _ = load_ort_model(model_path)
 
     batch_size = 5
     cpp_settings = settings.to_cpp()
@@ -29,9 +33,7 @@ def validate_model(model_path):
     engine_seeds = list(range(batch_size))
     batch_rollout.reset_state(engine_seeds)
 
-    h = c = np.zeros(
-        (hp.hist_num_layers, batch_size, hp.hist_hidden_dim), dtype=np.float32
-    )
+    h, c = init_lstm_state(batch_size, hp)
 
     i = 0
     while not batch_rollout.is_done():
@@ -90,6 +92,7 @@ def validate_model(model_path):
 
 @click.command()
 @click.argument("model-path", type=click.Path(exists=True, path_type=Path))
+@click.argument("model-version", type=int)
 @click.option(
     "--output-name",
     "-o",
@@ -104,7 +107,13 @@ def validate_model(model_path):
     default=True,
     help="Validate ONNX export against PyTorch model (default: True)",
 )
-def export_onnx(model_path: Path, output_name: str, batch_size: int, validate: bool):
+def export_onnx(
+    model_path: Path,
+    model_version: int,
+    output_name: str,
+    batch_size: int,
+    validate: bool,
+):
     """
     Export a trained Crew AI model to ONNX format.
 
@@ -116,6 +125,11 @@ def export_onnx(model_path: Path, output_name: str, batch_size: int, validate: b
     click.echo(f"Loading model from: {model_path}")
 
     pv_model, settings, hp = load_model_for_eval(model_path, onnx=True)
+    hp = Hyperparams(**asdict(hp))
+
+    settings_dict = {"settings": settings, "hp": hp}
+    with open(model_path / "settings_dict.pkl", "wb") as f:
+        pickle.dump(settings_dict, f)
 
     # Generate sample inputs using the game engine
     click.echo(f"Generating sample inputs with batch size {batch_size}...")
@@ -224,6 +238,12 @@ def export_onnx(model_path: Path, output_name: str, batch_size: int, validate: b
         validate_model(model_path)
 
     click.echo(f"✓ Successfully exported model to {output_name}")
+
+    # Put it in a docker accessible location inside the repo.
+    out_folder = Path("models") / f"v{model_version}"
+    out_folder.mkdir(exist_ok=True)
+    for bname in ["model.onnx", "settings_dict.pkl"]:
+        shutil.copy(model_path / bname, out_folder / bname)
 
 
 if __name__ == "__main__":

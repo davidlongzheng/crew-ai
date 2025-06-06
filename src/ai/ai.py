@@ -1,17 +1,71 @@
+import pickle
 from functools import cache
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 import onnxruntime
-import torch
 
 import cpp_game
-from ai.featurizer import featurize_cpp
-from ai.models import load_model_for_eval
-from ai.tree_search import TreeSearchSettings
-from ai.utils import get_lstm_state, set_lstm_state
+from ai.tree_search import TreeSearchSettings, uct_search
 from game.settings import Settings
+
+
+def load_ort_model(model_path):
+    ort_model = onnxruntime.InferenceSession(model_path / "model.onnx")
+    with open(model_path / "settings_dict.pkl", "rb") as f:
+        settings_dict = pickle.load(f)
+    settings = settings_dict["settings"]
+    hp = settings_dict["hp"]
+    return ort_model, settings, hp
+
+
+def init_lstm_state(num_rollouts, hp):
+    h = np.zeros(
+        (hp.hist_num_layers, num_rollouts, hp.hist_hidden_dim), dtype=np.float32
+    )
+    c = np.zeros(
+        (hp.hist_num_layers, num_rollouts, hp.hist_hidden_dim), dtype=np.float32
+    )
+    return h, c
+
+
+def collate_lstm_state(ai_states):
+    h = np.concatenate([x["lstm_state"][0] for x in ai_states], axis=1)
+    c = np.concatenate([x["lstm_state"][1] for x in ai_states], axis=1)
+    return h, c
+
+
+def featurize(
+    engines: list[cpp_game.Engine],
+    featurizer: cpp_game.Featurizer,
+    ai_states: list[dict],
+):
+    featurizer.reset()
+    assert len(engines) <= featurizer.num_rollouts
+    for engine in engines:
+        featurizer.record_move_inputs(engine)
+    move_inps = featurizer.get_move_inputs()
+    h, c = collate_lstm_state(ai_states)
+
+    num_rollouts = len(engines)
+    ort_inps = {
+        "hist_player_idx": move_inps.hist_player_idx[:num_rollouts],
+        "hist_trick": move_inps.hist_trick[:num_rollouts],
+        "hist_action": move_inps.hist_action[:num_rollouts],
+        "hist_turn": move_inps.hist_turn[:num_rollouts],
+        "hist_phase": move_inps.hist_phase[:num_rollouts],
+        "hand": move_inps.hand[:num_rollouts],
+        "player_idx": move_inps.player_idx[:num_rollouts],
+        "trick": move_inps.trick[:num_rollouts],
+        "turn": move_inps.turn[:num_rollouts],
+        "phase": move_inps.phase[:num_rollouts],
+        "task_idxs": move_inps.task_idxs[:num_rollouts],
+        "valid_actions": move_inps.valid_actions[:num_rollouts],
+        "h0": h,
+        "c0": c,
+    }
+    return ort_inps
 
 
 class AI:
@@ -21,7 +75,7 @@ class AI:
         ts_settings: TreeSearchSettings | None = None,
         num_rollouts: int = 1,
     ):
-        self.pv_model, self.settings = load_model_for_eval(path)
+        self.ort_model, self.settings, self.hp = load_ort_model(path)
         cpp_settings = self.settings.to_cpp()
         self.num_rollouts = num_rollouts
         self.featurizer = cpp_game.Featurizer(cpp_settings, num_rollouts)
@@ -42,28 +96,25 @@ class AI:
 
     def new_rollout(self):
         return {
-            "lstm_state": None,
+            "lstm_state": init_lstm_state(1, self.hp),
         }
 
     def get_pv(self, engines: list[cpp_game.Engine], ai_states: list[dict], timer=None):
         assert len(engines) <= self.num_rollouts
         assert len(engines) == len(ai_states)
-        inps = featurize_cpp(engines, self.featurizer)
+        inps = featurize(engines, self.featurizer, ai_states)
         valid_actions_li = [engine.valid_actions() for engine in engines]
-        set_lstm_state(self.pv_model, [x["lstm_state"] for x in ai_states])
 
         if timer:
             timer.start("forward")
-        with torch.no_grad():
-            log_probs, values, _ = self.pv_model(inps)
+        log_probs, values, h, c = self.ort_model.run(None, inps)
         if timer:
             timer.finish("forward")
 
-        for ai_state, lstm_state in zip(ai_states, get_lstm_state(self.pv_model)):
-            ai_state["lstm_state"] = lstm_state
+        for i, ai_state in enumerate(ai_states):
+            ai_state["lstm_state"] = (h[:, i : i + 1], c[:, i : i + 1])
 
-        probs = np.exp(log_probs.numpy())
-        values = values.numpy()
+        probs = np.exp(log_probs)
 
         return valid_actions_li, probs, values
 
@@ -89,7 +140,6 @@ class AI:
     def get_pv_tree_search(self, engines: list[cpp_game.Engine], ai_states: list[dict]):
         assert len(engines) <= self.num_rollouts
         assert len(engines) == len(ai_states)
-        from ai.tree_search import uct_search
 
         valid_actions_li, probs, values = uct_search(
             self.tree_search, self.ts_settings, engines, self, ai_states
@@ -136,11 +186,12 @@ def get_ai(
         and not settings.use_signals
         and settings.bank == "all"
         and settings.min_difficulty == settings.max_difficulty
-        and (4 <= cast(int, settings.min_difficulty) <= 7)
+        and (4 <= cast(int, settings.min_difficulty) <= 10)
         and settings.max_num_tasks == 8
     ):
         for path in [
             Path("/Users/davidzheng/projects/crew-ai/outdirs/0531/run_16"),
+            Path("/app/models/v0"),
         ]:
             if path.exists():
                 return _get_ai_by_path(path, ts_settings, num_rollouts)
@@ -168,7 +219,3 @@ def batch_rollout(engines, ai, seeds=None, use_tree_search=False):
     return np.array(
         [engine.state.status == cpp_game.Status.success for engine in engines]
     )
-
-
-def load_ort_model(model_path):
-    return onnxruntime.InferenceSession(model_path / "model.onnx")

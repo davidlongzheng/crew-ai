@@ -57,8 +57,33 @@ def test_ai_tree_search():
     print(engine.state.status)
 
 
+def test_ai_batch_rollout():
+    num_rollouts = 10
+    settings = replace(
+        get_preset(DEFAULT_PRESET),
+        min_difficulty=7,
+        max_difficulty=7,
+    )
+    cpp_settings = settings.to_cpp()
+    ts_settings = TreeSearchSettings(
+        num_iters=100,
+        seed=42,
+    )
+    ai = get_ai(settings, ts_settings, num_rollouts)
+
+    wins = []
+    seeds = list(range(42, 42 + num_rollouts))
+    engines = [cpp_game.Engine(cpp_settings) for _ in range(num_rollouts)]
+
+    wins = batch_rollout(engines, ai, seeds)
+
+    print(
+        f"n={len(wins)}, win={np.mean(wins):.3f}±{np.std(wins) / np.sqrt(len(wins)):.3f}"
+    )
+
+
 def test_ai_tree_search_batch_rollout():
-    num_rollouts = 100
+    num_rollouts = 10
     settings = replace(
         get_preset(DEFAULT_PRESET),
         min_difficulty=7,

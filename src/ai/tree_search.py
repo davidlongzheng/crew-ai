@@ -3,11 +3,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
-from tensordict import TensorDict
 
 import cpp_game
-from ai.utils import get_lstm_state, set_lstm_state
 
 if TYPE_CHECKING:
     from ai.ai import AI
@@ -51,6 +48,29 @@ class TreeSearchSettings:
     skip_thresh: float | None = 0.98
     num_iters: int = 100
     seed: int | None = None
+
+
+def featurize(move_inps, lstm_states):
+    h = np.concatenate([x[0] for x in lstm_states], axis=1)
+    c = np.concatenate([x[1] for x in lstm_states], axis=1)
+    num_rollouts = len(lstm_states)
+    ort_inps = {
+        "hist_player_idx": move_inps.hist_player_idx[:num_rollouts],
+        "hist_trick": move_inps.hist_trick[:num_rollouts],
+        "hist_action": move_inps.hist_action[:num_rollouts],
+        "hist_turn": move_inps.hist_turn[:num_rollouts],
+        "hist_phase": move_inps.hist_phase[:num_rollouts],
+        "hand": move_inps.hand[:num_rollouts],
+        "player_idx": move_inps.player_idx[:num_rollouts],
+        "trick": move_inps.trick[:num_rollouts],
+        "turn": move_inps.turn[:num_rollouts],
+        "phase": move_inps.phase[:num_rollouts],
+        "task_idxs": move_inps.task_idxs[:num_rollouts],
+        "valid_actions": move_inps.valid_actions[:num_rollouts],
+        "h0": h,
+        "c0": c,
+    }
+    return ort_inps
 
 
 def uct_search(
@@ -104,40 +124,16 @@ def uct_search(
             continue
 
         timer.start("pv")
-        inps = TensorDict(
-            hist=TensorDict(
-                player_idx=move_inps.hist_player_idx,
-                trick=move_inps.hist_trick,
-                action=move_inps.hist_action,
-                turn=move_inps.hist_turn,
-                phase=move_inps.hist_phase,
-            ),
-            private=TensorDict(
-                hand=move_inps.hand,
-                player_idx=move_inps.player_idx,
-                trick=move_inps.trick,
-                turn=move_inps.turn,
-                phase=move_inps.phase,
-                task_idxs=move_inps.task_idxs,
-            ),
-            valid_actions=move_inps.valid_actions,
-        )
-        inps.auto_batch_size_()
-        inps = inps[:num_leaves]
-
         lstm_states = [lstm_state_map[parent_idx] for _, parent_idx in leaf_nodes]
-        set_lstm_state(ai.pv_model, lstm_states)
+        ort_inps = featurize(move_inps, lstm_states)
 
-        with torch.no_grad():
-            log_probs, values, _ = ai.pv_model(inps)
+        log_probs, values, h, c = ai.ort_model.run(None, ort_inps)
 
-        lstm_states = get_lstm_state(ai.pv_model)
-        for (node_idx, _), lstm_state in zip(leaf_nodes, lstm_states):
+        for i, (node_idx, _) in enumerate(leaf_nodes):
             assert node_idx not in lstm_state_map
-            lstm_state_map[node_idx] = lstm_state
+            lstm_state_map[node_idx] = (h[:, i : i + 1], c[:, i : i + 1])
 
-        probs = np.exp(log_probs.numpy())
-        values = values.numpy()
+        probs = np.exp(log_probs)
         timer.finish("pv")
 
         timer.start("expand")

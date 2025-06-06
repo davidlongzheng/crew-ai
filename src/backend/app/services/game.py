@@ -2,12 +2,12 @@ import asyncio
 import random
 import time
 from dataclasses import replace
-from pathlib import Path
 
 from fastapi import WebSocket
 from loguru import logger
 
 import cpp_game
+from ai.ai import AI, get_ai
 from backend.app.schemas.game import (
     AddAi,
     ClientMessage,
@@ -159,13 +159,6 @@ class GameRoom:
             )
             return
 
-        if not supports_ai():
-            logger.error("Do not support AI.")
-            await self.send(
-                websocket, Error(room_id=self.room_id, message="AI not supported")
-            )
-            return
-
         i = 0
         while True:
             if f"ai_{i}" not in self.player_uids:
@@ -281,8 +274,6 @@ class GameRoom:
         if use_ai:
             ai_settings = replace(settings, use_signals=False)
             try:
-                from ai.ai import get_ai
-
                 ai = get_ai(ai_settings)
             except ValueError:
                 logger.error(f"Unsupported AI settings: {settings}")
@@ -303,7 +294,7 @@ class GameRoom:
         self.active_cards = []
 
         if use_ai:
-            self.ai = ai
+            self.ai: AI | None = ai
             self.ai_engine = cpp_game.Engine(ai_settings.to_cpp())
             self.ai_engine.reset_state(seed)
             assert self.engine.state.task_idxs == self.ai_engine.state.task_idxs
@@ -482,7 +473,3 @@ class GameRoom:
         for websockets in self.websockets.values():
             for websocket in websockets:
                 await self.send(websocket, message)
-
-
-def supports_ai():
-    return Path("/Users/davidzheng/projects/crew-ai/outdirs").exists()

@@ -631,7 +631,7 @@ def main(
         logger.info(f"Output Directory: {outdir}")
         logger.info(f"Device: {device}")
         logger.info(f"Training Seed: {seed}")
-        torch.set_default_dtype(hp.float_dtype)
+        torch.set_default_dtype(torch.float32)
         torch.manual_seed(seed)
 
         if hp.profile_memory:

@@ -30,15 +30,15 @@ from ai.models import PolicyValueModel, get_models
 from ai.rollout import do_batch_rollout_cpp
 from ai.summary_writer import CustomSummaryWriter
 from ai.utils import (
+    Timer,
     create_lr_sched,
     create_optim,
     get_device,
+    get_phase_weights,
     num_params,
     print_memory_usage,
     should_keep_outdir,
     win_rate_by_difficulty,
-    get_phase_weights,
-    Timer,
 )
 from game.settings import DEFAULT_PRESET, SETTINGS_TYPE, Settings, get_preset
 
@@ -819,7 +819,7 @@ def main(
         logger.info(f"Output Directory: {outdir}")
         logger.info(f"Device: {device}")
         logger.info(f"Training Seed: {seed}")
-        torch.set_default_dtype(hp.float_dtype)
+        torch.set_default_dtype(torch.float32)
         torch.manual_seed(seed)
 
         if hp.profile_memory:
