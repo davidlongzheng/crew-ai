@@ -39,7 +39,7 @@ class WrapperModel(nn.Module):
         return self.model(TensorDict(x=x, k=k))
 
 
-def run():
+def gen_model():
     path = Path("/Users/davidzheng/projects/crew-ai/outdirs/0531/run_16")
     settings_dict = torch.load(path / "settings.pth", weights_only=False)
     hp = cast(Hyperparams, settings_dict["hp"])
@@ -55,8 +55,8 @@ def run():
     pv_model.eval()
     pv_model.start_single_step()
 
-    model = pv_model.backbone_model
-    assert not model.phase_branch
+    model = pv_model
+    assert not model.backbone_model.phase_branch
 
     batch_size = 5
     cpp_settings = settings.to_cpp()
@@ -79,6 +79,7 @@ def run():
         torch.from_numpy(move_inps.turn),
         torch.from_numpy(move_inps.phase),
         torch.from_numpy(move_inps.task_idxs),
+        torch.from_numpy(move_inps.valid_actions),
         h,
         c,
     )
@@ -94,13 +95,15 @@ def run():
         "turn",
         "phase",
         "task_idxs",
+        "valid_actions",
         "h0",
         "c0",
     ]
-    inp_batch_idxs = [0] * 11 + [1] * 2
+    inp_batch_idxs = [0] * 12 + [1] * 2
     assert len(inp_batch_idxs) == len(inps) == len(input_names)
-    output_names = ["out", "h1", "c1"]
-    out_batch_idxs = [0, 1, 1]
+
+    output_names = ["log_probs", "value", "h1", "c1"]
+    out_batch_idxs = [0, 0, 1, 1]
     assert len(out_batch_idxs) == len(output_names)
     dynamic_axes = {}
     for name, batch_idx in zip(input_names, inp_batch_idxs):
@@ -123,8 +126,6 @@ def run():
             input_names=input_names,
             output_names=output_names,
             dynamic_axes=dynamic_axes,
-            dynamo=False,
-            report=True,
         )
 
     onnx_model = onnx.load(model_fn)
@@ -162,3 +163,90 @@ def run():
             out = out[:, :new_batch_size]
         print(name, out.shape, ort_out.shape)
         assert np.isclose(out, ort_out, atol=1e-6).all()
+
+
+def test_model():
+    path = Path("/Users/davidzheng/projects/crew-ai/outdirs/0531/run_16")
+    settings_dict = torch.load(path / "settings.pth", weights_only=False)
+    hp = cast(Hyperparams, settings_dict["hp"])
+    settings = cast(Settings, settings_dict["settings"])
+    onnx_model = cast(PolicyValueModel, get_models(hp, settings, onnx=True)["pv"])
+    model = cast(PolicyValueModel, get_models(hp, settings, onnx=False)["pv"])
+    checkpoint = torch.load(
+        path / "checkpoint.pth",
+        weights_only=False,
+        map_location=torch.device("cpu"),
+    )
+    onnx_model.load_state_dict(checkpoint["pv_model"])
+    onnx_model.eval()
+    onnx_model.start_single_step()
+    model.load_state_dict(checkpoint["pv_model"])
+    model.eval()
+    model.start_single_step()
+
+    batch_size = 5
+    cpp_settings = settings.to_cpp()
+    batch_rollout = cpp_game.BatchRollout(cpp_settings, batch_size)
+    engine_seeds = list(range(batch_size))
+    batch_rollout.reset_state(engine_seeds)
+
+    model_fn = "my_model.onnx"
+    ort_session = onnxruntime.InferenceSession(model_fn)
+
+    h = c = np.zeros(
+        (hp.hist_num_layers, batch_size, hp.hist_hidden_dim), dtype=np.float32
+    )
+
+    i = 0
+    while not batch_rollout.is_done():
+        print("iter", i)
+        move_inps = batch_rollout.get_move_inputs()
+
+        inps = TensorDict(
+            hist=TensorDict(
+                player_idx=move_inps.hist_player_idx,
+                trick=move_inps.hist_trick,
+                action=move_inps.hist_action,
+                turn=move_inps.hist_turn,
+                phase=move_inps.hist_phase,
+            ),
+            private=TensorDict(
+                hand=move_inps.hand,
+                player_idx=move_inps.player_idx,
+                trick=move_inps.trick,
+                turn=move_inps.turn,
+                phase=move_inps.phase,
+                task_idxs=move_inps.task_idxs,
+            ),
+            valid_actions=move_inps.valid_actions,
+        )
+        ort_inps = {
+            "hist_player_idx": move_inps.hist_player_idx,
+            "hist_trick": move_inps.hist_trick,
+            "hist_action": move_inps.hist_action,
+            "hist_turn": move_inps.hist_turn,
+            "hist_phase": move_inps.hist_phase,
+            "hand": move_inps.hand,
+            "player_idx": move_inps.player_idx,
+            "trick": move_inps.trick,
+            "turn": move_inps.turn,
+            "phase": move_inps.phase,
+            "task_idxs": move_inps.task_idxs,
+            "valid_actions": move_inps.valid_actions,
+            "h0": h,
+            "c0": c,
+        }
+        with torch.no_grad():
+            log_probs, value, _ = model(inps)
+            log_probs = log_probs.numpy()
+            value = value.numpy()
+
+        ort_outs = ort_session.run(None, ort_inps)
+        ort_log_probs, ort_value, h, c = ort_outs
+
+        assert np.isclose(log_probs, ort_log_probs, atol=1e-5).all()
+        assert np.isclose(value, ort_value, atol=1e-5).all()
+        action_idxs = np.argmax(log_probs, axis=1)
+        batch_rollout.move(action_idxs, log_probs)
+
+        i += 1

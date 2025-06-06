@@ -14,7 +14,7 @@ from ai.embedding import (
 )
 from ai.hyperparams import Hyperparams
 from ai.utils import MLP
-from game.settings import Settings, get_preset
+from game.settings import Settings
 from game.utils import get_splits_and_phases
 
 
@@ -49,11 +49,18 @@ class BranchedLSTM(nn.Module):
 
 class BranchedFF(nn.Module):
     def __init__(
-        self, make_ff: Callable[[], nn.Module], output_dim: int, settings: Settings
+        self,
+        make_ff: Callable[[], nn.Module],
+        output_dim: int,
+        onnx: bool,
+        settings: Settings,
     ):
         super().__init__()
         self.ffs = nn.ModuleList([make_ff() for _ in range(settings.num_phases)])
         self.output_dim = output_dim
+        self.onnx = onnx
+        if self.onnx:
+            assert settings.num_phases <= 2
         self.set_splits(settings)
 
     def set_splits(self, settings):
@@ -76,13 +83,27 @@ class BranchedFF(nn.Module):
         # phases = (N,) or (N, T)
 
         if len(phases.shape) == 1:
-            # We need to support heterogeneous phases in the batch dim
-            # for tree search.
-            y = torch.empty(x.shape[:-1] + (self.output_dim,), device=x.device)
-            for phase in phases.unique().tolist():
-                phase_mask = phases == phase
-                y[phase_mask] = self.ffs[phase](x[phase_mask])
-            return y
+            if self.onnx:
+                phase_mask = phases == 1
+                if len(x.shape) == 3:
+                    phase_mask = phase_mask.unsqueeze(-1).unsqueeze(-1)
+                else:
+                    phase_mask = phase_mask.unsqueeze(-1)
+                return torch.where(
+                    phase_mask,
+                    self.ffs[1](x),
+                    self.ffs[0](x),
+                )
+            else:
+                # We need to support heterogeneous phases in the batch dim
+                # for tree search.
+                y = torch.empty(x.shape[:-1] + (self.output_dim,), device=x.device)
+                for phase in phases.unique().tolist():
+                    phase_mask = phases == phase
+                    y[phase_mask] = self.ffs[phase](x[phase_mask])
+                return y
+
+        assert not self.onnx
 
         y_splits = []
         for phase in range(len(self.ffs)):
@@ -317,7 +338,7 @@ class BackboneModel(nn.Module):
         )
         if phase_branch:
             assert not self.onnx
-            self.mlp: nn.Module = BranchedFF(make_mlp, output_dim, settings)
+            self.mlp: nn.Module = BranchedFF(make_mlp, output_dim, self.onnx, settings)
         else:
             self.mlp = make_mlp()
 
@@ -436,6 +457,7 @@ class PolicyHead(nn.Module):
         query_dim: int,
         signal_prior: str,
         phase_branch: bool,
+        onnx: bool,
         settings: Settings,
     ):
         super().__init__()
@@ -443,6 +465,7 @@ class PolicyHead(nn.Module):
         self.action_embed = action_embed
         self.phase_embed = None if phase_branch else phase_embed
         self.phase_branch = phase_branch
+        self.onnx = onnx
         key_input_dim = action_embed.output_dim + (
             0 if phase_branch else phase_embed.output_dim
         )
@@ -455,14 +478,16 @@ class PolicyHead(nn.Module):
             dropout=dropout,
         )
         if phase_branch:
-            self.key_model: nn.Module = BranchedFF(make_key_model, query_dim, settings)
+            self.key_model: nn.Module = BranchedFF(
+                make_key_model, query_dim, self.onnx, settings
+            )
         else:
             self.key_model = make_key_model()
         self.query_dim = query_dim
         make_query_model = lambda: nn.Linear(query_input_dim, query_dim)
         if phase_branch:
             self.query_model: nn.Module = BranchedFF(
-                make_query_model, query_dim, settings
+                make_query_model, query_dim, self.onnx, settings
             )
         else:
             self.query_model = make_query_model()
@@ -593,6 +618,7 @@ class PolicyValueModel(nn.Module):
         self.policy_head = policy_head
         self.value_head = value_head
         self.aux_info_head = aux_info_head
+        self.onnx = backbone_model.onnx
 
     @cached_property
     def param_groups(self):
@@ -613,20 +639,69 @@ class PolicyValueModel(nn.Module):
     def set_state(self, state):
         self.backbone_model.hist_model.state = state
 
-    def forward(self, inps):
-        backbone_embed = self.backbone_model(inps["hist"], inps["private"])
-        aux_info_pred = (
-            self.aux_info_head(backbone_embed) if self.aux_info_head else None
-        )
-        policy_pred = self.policy_head(
-            backbone_embed,
-            inps["valid_actions"],
-            inps["private"]["phase"],
-            inps["private"]["trick"],
-        )
-        value_pred = self.value_head(backbone_embed)
+    def forward(self, *args):
+        if self.onnx:
+            (
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                hand,
+                player_idx,
+                trick,
+                turn,
+                phase,
+                task_idxs,
+                valid_actions,
+                h,
+                c,
+            ) = args
+            backbone_embed, h, c = self.backbone_model(
+                hist_player_idx,
+                hist_trick,
+                hist_action,
+                hist_turn,
+                hist_phase,
+                hand,
+                player_idx,
+                trick,
+                turn,
+                phase,
+                task_idxs,
+                h,
+                c,
+            )
+            aux_info_pred = (
+                self.aux_info_head(backbone_embed) if self.aux_info_head else None
+            )
+            policy_pred = self.policy_head(
+                backbone_embed,
+                valid_actions,
+                phase,
+                trick,
+            )
+            value_pred = self.value_head(backbone_embed)
 
-        return policy_pred, value_pred, aux_info_pred
+            if aux_info_pred is not None:
+                return policy_pred, value_pred, aux_info_pred, h, c
+            else:
+                return policy_pred, value_pred, h, c
+        else:
+            inps = args[0]
+            backbone_embed = self.backbone_model(inps["hist"], inps["private"])
+            aux_info_pred = (
+                self.aux_info_head(backbone_embed) if self.aux_info_head else None
+            )
+            policy_pred = self.policy_head(
+                backbone_embed,
+                inps["valid_actions"],
+                inps["private"]["phase"],
+                inps["private"]["trick"],
+            )
+            value_pred = self.value_head(backbone_embed)
+
+            return policy_pred, value_pred, aux_info_pred
 
 
 def get_models(
@@ -688,6 +763,7 @@ def get_models(
         hp.policy_query_dim,
         hp.policy_signal_prior,
         hp.policy_phase_branch,
+        onnx,
         settings,
     )
     value_head = ValueHead(
@@ -702,16 +778,11 @@ def get_models(
     return ret
 
 
-def load_model_for_eval(path: Path):
-    if path.name == "run_7":
-        hp = Hyperparams()
-        settings = get_preset("all_ns")
-        assert not settings.use_signals
-    else:
-        settings_dict = torch.load(path / "settings.pth", weights_only=False)
-        hp = settings_dict["hp"]
-        settings = settings_dict["settings"]
-    models = get_models(hp, settings)
+def load_model_for_eval(path: Path, onnx: bool = False):
+    settings_dict = torch.load(path / "settings.pth", weights_only=False)
+    hp = settings_dict["hp"]
+    settings = settings_dict["settings"]
+    models = get_models(hp, settings, onnx=onnx)
     pv_model = cast(PolicyValueModel, models["pv"])
     checkpoint = torch.load(
         path / "checkpoint.pth",
@@ -721,4 +792,4 @@ def load_model_for_eval(path: Path):
     pv_model.load_state_dict(checkpoint["pv_model"])
     pv_model.eval()
     pv_model.start_single_step()
-    return pv_model, settings
+    return pv_model, settings, hp

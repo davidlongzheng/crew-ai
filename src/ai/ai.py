@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
+import onnxruntime
 import torch
 
 import cpp_game
@@ -167,3 +168,7 @@ def batch_rollout(engines, ai, seeds=None, use_tree_search=False):
     return np.array(
         [engine.state.status == cpp_game.Status.success for engine in engines]
     )
+
+
+def load_ort_model(model_path):
+    return onnxruntime.InferenceSession(model_path / "model.onnx")
