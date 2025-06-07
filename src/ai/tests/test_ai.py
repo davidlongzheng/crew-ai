@@ -83,7 +83,7 @@ def test_ai_batch_rollout():
 
 
 def test_ai_tree_search_batch_rollout():
-    num_rollouts = 10
+    num_rollouts = 50
     settings = replace(
         get_preset(DEFAULT_PRESET),
         min_difficulty=7,

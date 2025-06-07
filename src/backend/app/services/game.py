@@ -279,7 +279,10 @@ class GameRoom:
                 logger.error(f"Unsupported AI settings: {settings}")
                 await self.send(
                     websocket,
-                    Error(room_id=self.room_id, message="Unsupported AI settings"),
+                    Error(
+                        room_id=self.room_id,
+                        message="Unsupported AI settings. AI only works for 4 players, difficulty up to 10.",
+                    ),
                 )
                 return None
 
@@ -323,18 +326,19 @@ class GameRoom:
         if self.ai is not None:
             start_time = time.time()
             if is_signal_phase:
-                ai_action = Action(self.engine.state.cur_player, "nosignal")
+                if action == "ai":
+                    action = Action(self.engine.state.cur_player, "nosignal")
             else:
                 ai_action = to_py_action(
                     self.ai.get_move(self.ai_engine, self.ai_state)
                 )
 
-            if action == "ai":
-                action = ai_action
-                elapsed = time.time() - start_time
-                sleep_time = 2
-                if elapsed < sleep_time:
-                    await asyncio.sleep(sleep_time - elapsed)
+                if action == "ai":
+                    action = ai_action
+                    elapsed = time.time() - start_time
+                    sleep_time = 2
+                    if elapsed < sleep_time:
+                        await asyncio.sleep(sleep_time - elapsed)
 
         self.engine.move(action)
         if self.ai_engine and not is_signal_phase:

@@ -75,7 +75,7 @@ export function LobbyStage({
               onChange={(e) => handleSetSettings(Number(e.target.value))}
               className="border-4 border-white bg-[#2c3e50] text-white p-2 font-['Press_Start_2P'] text-sm"
             >
-              {[2, 3, 4, 5].map((n) => (
+              {[3, 4].map((n) => (
                 <option
                   key={n}
                   value={n}

@@ -184,7 +184,24 @@ function processSequencedMessage(
 const GamePage = ({ uid, roomId }: GamePageProps) => {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket(
-    `${process.env.NEXT_PUBLIC_API_WS_URL}/game/ws/${roomId}?uid=${uid}`
+    `${process.env.NEXT_PUBLIC_API_WS_URL}/game/ws/${roomId}?uid=${uid}`,
+    {
+      shouldReconnect: (closeEvent) => {
+        // Optional: you can inspect closeEvent here
+        console.warn(
+          `WebSocket closed with code ${closeEvent.code}, reason: ${closeEvent.reason}.`
+        );
+        return true; // Always try to reconnect
+      },
+      reconnectAttempts: 10, // Optional: number of attempts
+      reconnectInterval: 3000, // Optional: ms between retries
+      onClose: () => {
+        console.warn("WebSocket closed, attempting to reconnect...");
+      },
+      onError: (event) => {
+        console.error("WebSocket error:", event);
+      },
+    }
   );
   const messageQueue = useRef<Queue<ServerMessage>>(new Queue());
   const gameStateRef = useRef(gameState);
@@ -216,7 +233,7 @@ const GamePage = ({ uid, roomId }: GamePageProps) => {
   if (readyState === ReadyState.CLOSED) {
     return (
       <ErrorScreen
-        message="Unable to connect to the game server. Please go back to the front page and try again."
+        message="Unable to connect to the game server. Please refresh or create a new game."
         onReturnHome={() => (window.location.href = "/")}
       />
     );
@@ -267,9 +284,12 @@ export default function GamePageWithLoading() {
           return;
         }
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/game/set_uid`, {
-          method: "POST",
-        });
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/game/set_uid`,
+          {
+            method: "POST",
+          }
+        );
         const data = await response.json();
         document.cookie = `uid=${data.uid}`;
         setUid(data.uid);
