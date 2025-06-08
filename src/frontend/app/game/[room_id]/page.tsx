@@ -16,13 +16,20 @@ interface GamePageProps {
 
 // Components
 const LoadingScreen = () => (
-  <main className="min-h-screen flex flex-col items-center justify-center bg-[#2c3e50] relative overflow-hidden">
-    <div className="absolute inset-0 bg-[url('/pixel-pattern.svg')] opacity-10"></div>
-    <div className="text-center space-y-8 relative z-10">
-      <h1 className="text-4xl font-['Press_Start_2P'] text-white mb-4 pixel-text-shadow animate-pulse">
-        Loading Game...
-      </h1>
-      <div className="w-16 h-16 border-4 border-white border-t-transparent animate-spin"></div>
+  <main className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
+    <div className="max-w-md mx-auto text-center space-y-8 animate-fadeInUp">
+      <div className="space-y-4">
+        <div className="w-16 h-16 mx-auto border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <h1 className="text-2xl sm:text-3xl font-semibold text-gray-800">
+          Loading Game...
+        </h1>
+        <p className="text-gray-600 font-medium">
+          Connecting to the game server
+        </p>
+      </div>
+      <div className="w-full bg-gray-200 rounded-full h-2">
+        <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{width: '60%'}}></div>
+      </div>
     </div>
   </main>
 );
@@ -34,24 +41,39 @@ const ErrorScreen = ({
   message: string;
   onReturnHome: () => void;
 }) => (
-  <main className="min-h-screen flex flex-col items-center justify-center bg-[#2c3e50] relative overflow-hidden">
-    <div className="absolute inset-0 bg-[url('/pixel-pattern.svg')] opacity-10"></div>
-    <div className="text-center space-y-8 relative z-10">
-      <h1 className="text-4xl font-['Press_Start_2P'] text-white mb-4 pixel-text-shadow">
-        Error
-      </h1>
-      <p className="text-xl text-white/90 max-w-2xl font-['Press_Start_2P'] text-sm leading-relaxed">
-        {message}
-      </p>
-      <button
-        onClick={onReturnHome}
-        className="px-8 py-4 bg-[#e74c3c] text-white rounded-none text-xl font-['Press_Start_2P'] 
-                 hover:bg-[#c0392b] transition-colors duration-200 
-                 border-4 border-white pixel-button-shadow
-                 transform hover:scale-105 active:scale-95"
-      >
-        Return to Home
-      </button>
+  <main className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
+    <div className="max-w-md mx-auto text-center space-y-8 animate-fadeInUp">
+      <div className="space-y-6">
+        {/* Error Icon */}
+        <div className="w-16 h-16 mx-auto bg-red-100 rounded-full flex items-center justify-center">
+          <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+        </div>
+        
+        <div className="space-y-2">
+          <h1 className="text-2xl sm:text-3xl font-semibold text-gray-800">
+            Connection Error
+          </h1>
+          <p className="text-gray-600 font-medium leading-relaxed">
+            {message}
+          </p>
+        </div>
+      </div>
+      
+      <div className="space-y-4">
+        <button
+          onClick={onReturnHome}
+          className="w-full sm:w-auto px-8 py-3 bg-blue-600 text-white rounded-xl font-semibold 
+                   button-hover focus:outline-none focus:ring-4 focus:ring-blue-200
+                   min-w-[200px]"
+        >
+          Return to Home
+        </button>
+        <p className="text-sm text-gray-500">
+          Try refreshing the page or creating a new game room
+        </p>
+      </div>
     </div>
   </main>
 );
