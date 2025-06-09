@@ -4,7 +4,6 @@ import { Action, ClientMessage, GameState } from "@/lib/types";
 import { GameArea } from "./components/GameArea";
 import { ActionHistory } from "./components/ActionHistory";
 import { PlayerHand } from "./components/PlayerHand";
-import { GameStatus } from "./components/GameStatus";
 
 interface PlayStageProps {
   gameState: GameState;
@@ -74,8 +73,6 @@ export function PlayStage({
             <GameArea
               gameState={gameState}
               uid={uid}
-              roomId={roomId}
-              sendJsonMessage={sendJsonMessage}
               currentPlayerIdx={currentPlayerIdx}
               handleMove={handleMove}
             />

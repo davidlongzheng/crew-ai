@@ -1,6 +1,4 @@
-import { useState } from "react";
-import { Card, card_to_string, Signal } from "@/lib/types";
-import { formatCardText } from "../utils";
+import { Card, Signal } from "@/lib/types";
 
 export interface PlayerHandleProps {
   handle: string;

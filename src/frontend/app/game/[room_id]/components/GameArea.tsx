@@ -1,4 +1,4 @@
-import { Action, ClientMessage, GameState } from "@/lib/types";
+import { Action, GameState } from "@/lib/types";
 import { getPlayerPosition } from "../utils";
 import { GameStatus } from "./GameStatus";
 import { PlayerHandle } from "./PlayerHandle";
@@ -9,8 +9,6 @@ import { useState } from "react";
 interface GameAreaProps {
   gameState: GameState;
   uid: string;
-  roomId: string;
-  sendJsonMessage: (message: ClientMessage) => void;
   currentPlayerIdx: number;
   handleMove: (action: Action) => void;
 }
@@ -18,13 +16,9 @@ interface GameAreaProps {
 export function GameArea({
   gameState,
   uid,
-  roomId,
-  sendJsonMessage,
   currentPlayerIdx,
   handleMove,
 }: GameAreaProps) {
-  const isDraftPhase = gameState.engine_state!.phase === "draft";
-
   const [modalPlayerIdx, setModalPlayerIdx] = useState<number | null>(null);
 
   const maybeSetModalPlayerIdx = (idx: number | null) => {
