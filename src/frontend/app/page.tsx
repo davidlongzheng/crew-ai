@@ -23,7 +23,7 @@ export default function Home() {
   };
 
   return (
-    <main className="flex flex-col items-center justify-center min-h-screen px-4 sm:px-6 lg:px-8">
+    <main className="flex flex-col items-center justify-center px-4 min-h-[500px] sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto space-y-8 text-center animate-fadeInUp">
         {/* Header Section */}
         <div className="space-y-6">

@@ -1,8 +1,10 @@
 import { Action, ClientMessage, GameState } from "@/lib/types";
 import { getPlayerPosition } from "../utils";
 import { GameStatus } from "./GameStatus";
-import { PlayerInfo } from "./PlayerInfo";
+import { PlayerHandle } from "./PlayerHandle";
 import { CenterArea } from "./CenterArea";
+import { PlayerInfoModal } from "./PlayerInfoModal";
+import { useState } from "react";
 
 interface GameAreaProps {
   gameState: GameState;
@@ -23,11 +25,26 @@ export function GameArea({
 }: GameAreaProps) {
   const isDraftPhase = gameState.engine_state!.phase === "draft";
 
+  const [modalPlayerIdx, setModalPlayerIdx] = useState<number | null>(null);
+
+  const maybeSetModalPlayerIdx = (idx: number | null) => {
+    if (
+      idx === null ||
+      gameState.engine_state!.assigned_tasks[idx].length > 0 ||
+      gameState.engine_state!.signals[idx]
+    ) {
+      setModalPlayerIdx(idx);
+    } else {
+      setModalPlayerIdx(null);
+    }
+  };
+
   return (
     <div
-      className={`relative p-6 shadow-lg bg-slate-50/95 backdrop-blur-sm rounded-xl ${
-        isDraftPhase ? "flex-none min-h-fit" : "flex-1 min-h-96 lg:min-h-0"
-      }`}
+      className={`relative p-6 shadow-lg bg-slate-50/95 backdrop-blur-sm rounded-xl flex-1 min-h-[450px] lg:min-h-0`}
+      onClick={() => {
+        maybeSetModalPlayerIdx(null);
+      }}
     >
       <GameStatus
         phase={gameState.engine_state!.phase}
@@ -45,16 +62,19 @@ export function GameArea({
               position === "bottom"
                 ? "bottom-4 left-1/2 -translate-x-1/2"
                 : position === "left"
-                ? `left-4 top-20`
+                ? `left-8 top-1/2 -translate-y-1/2 -rotate-90 translate-x-[-50%]`
                 : position === "top"
-                ? `top-20 left-1/2 -translate-x-1/2`
-                : `right-4 top-20`
+                ? `top-16 left-1/2 -translate-x-1/2`
+                : `right-8 top-1/2 -translate-y-1/2 rotate-90 translate-x-[50%]`
             }`}
+            onClick={(e) => {
+              maybeSetModalPlayerIdx(playerIdx);
+              e.stopPropagation();
+            }}
           >
-            <PlayerInfo
+            <PlayerHandle
               handle={gameState.handles[idx]}
               isCaptain={gameState.engine_state!.captain === playerIdx}
-              isLeader={gameState.engine_state!.leader === playerIdx}
               phase={gameState.engine_state!.phase}
               isCurrentTurn={isCurrentTurn}
               tasks={gameState.engine_state!.assigned_tasks[playerIdx]}
@@ -64,20 +84,25 @@ export function GameArea({
           </div>
         );
       })}
-      {/* Center game area */}
-      <div className="w-full px-4 pt-28 pb-20 min-h-[300px]">
-        <CenterArea
-          phase={gameState.engine_state!.phase}
-          win={gameState.engine_state!.status === "success"}
-          unassignedTasks={gameState.engine_state!.unassigned_task_idxs}
-          tasks={gameState.tasks!}
-          validActions={gameState.valid_actions}
-          activeCards={gameState.active_cards}
-          currentPlayerIdx={currentPlayerIdx}
-          onDraft={handleMove}
-          isCurrentTurn={gameState.cur_uid === uid}
+      {modalPlayerIdx !== null && (
+        <PlayerInfoModal
+          tasks={gameState.engine_state!.assigned_tasks[modalPlayerIdx]}
+          signal={gameState.engine_state!.signals[modalPlayerIdx]}
+          hand={gameState.engine_state!.hands[modalPlayerIdx]}
         />
-      </div>
+      )}
+      {/* Center game area */}
+      <CenterArea
+        phase={gameState.engine_state!.phase}
+        win={gameState.engine_state!.status === "success"}
+        unassignedTasks={gameState.engine_state!.unassigned_task_idxs}
+        tasks={gameState.tasks!}
+        validActions={gameState.valid_actions}
+        activeCards={gameState.active_cards}
+        currentPlayerIdx={currentPlayerIdx}
+        onDraft={handleMove}
+        isCurrentTurn={gameState.cur_uid === uid}
+      />
     </div>
   );
 }

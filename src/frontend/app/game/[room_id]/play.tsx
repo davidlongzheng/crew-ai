@@ -4,6 +4,7 @@ import { Action, ClientMessage, GameState } from "@/lib/types";
 import { GameArea } from "./components/GameArea";
 import { ActionHistory } from "./components/ActionHistory";
 import { PlayerHand } from "./components/PlayerHand";
+import { GameStatus } from "./components/GameStatus";
 
 interface PlayStageProps {
   gameState: GameState;
@@ -33,40 +34,40 @@ export function PlayStage({
 
   return (
     <div className="relative min-h-screen overflow-hidden">
-      <div className="max-w-7xl mx-auto min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)] relative z-10 mt-4 px-4 lg:px-0">
+      <div className="max-w-7xl mx-auto min-h-[calc(100vh-6rem)] lg:h-[calc(100vh-6rem)] relative z-10 mt-4 px-4 lg:px-0">
         {/* Header with game controls */}
-        <div className="flex justify-end gap-2 mb-4">
-          <button
-            onClick={() => {
-              sendJsonMessage({
-                type: "end_game",
-                room_id: roomId,
-              });
-            }}
-            className="px-6 py-3 text-sm font-semibold text-white transition-all duration-200 transform bg-red-600 border border-red-700 rounded-lg shadow-lg hover:bg-red-700 hover:scale-105 active:scale-95 hover:shadow-xl"
-          >
-            End Game
-          </button>
-          {gameState.engine_state!.phase === "end" && (
+        <div className="grid grid-cols-2 mb-3">
+          <div className="flex justify-end col-start-3 gap-2">
             <button
               onClick={() => {
                 sendJsonMessage({
-                  type: "start_game",
+                  type: "end_game",
                   room_id: roomId,
                 });
               }}
-              className="px-6 py-3 text-sm font-semibold text-white transition-all duration-200 transform bg-green-600 border border-green-700 rounded-lg shadow-lg hover:bg-green-700 hover:scale-105 active:scale-95 hover:shadow-xl"
+              className="px-3 py-3 text-xs font-semibold text-white transition-all duration-200 transform bg-red-600 border border-gray-400 rounded-lg shadow-lg hover:bg-red-700 hover:scale-105 active:scale-95 hover:shadow-xl sm:min-w-[100px]"
             >
-              Play Again
+              End Game
             </button>
-          )}
+            {gameState.engine_state!.phase === "end" && (
+              <button
+                onClick={() => {
+                  sendJsonMessage({
+                    type: "start_game",
+                    room_id: roomId,
+                  });
+                }}
+                className="px-3 py-3 text-xs font-semibold text-white transition-all duration-200 transform bg-green-600 border border-gray-400 rounded-lg shadow-lg hover:bg-green-700 hover:scale-105 active:scale-95 hover:shadow-xl min-w-[100px]"
+              >
+                Play Again
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className={`grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 ${
-          gameState.engine_state!.phase === "draft" 
-            ? "min-h-fit" 
-            : "min-h-full lg:h-full"
-        }`}>
+        <div
+          className={`grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 min-h-full lg:h-full`}
+        >
           {/* Main content area */}
           <div className="flex flex-col gap-4">
             {/* Main game area */}
@@ -89,7 +90,7 @@ export function PlayStage({
             />
           </div>
           {/* Action history sidebar - hidden on mobile, visible on desktop */}
-          <div className="flex-col hidden p-6 overflow-hidden border shadow-lg lg:flex bg-white/80 backdrop-blur-sm rounded-xl border-white/30">
+          <div className="flex flex-col p-6 overflow-hidden border shadow-lg lg:flex bg-white/80 backdrop-blur-sm rounded-xl border-white/30 max-h-[80vh] lg:max-h-none">
             <h2 className="mb-6 text-xl font-semibold text-gray-800">
               History
             </h2>

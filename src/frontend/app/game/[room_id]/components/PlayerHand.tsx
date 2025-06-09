@@ -77,7 +77,7 @@ export const PlayerHand = ({
                   );
                   if (passAction) onMove(passAction);
                 }}
-                className="px-4 py-2 font-semibold text-white transition-all duration-300 bg-gray-600 rounded-lg sm:px-6 sm:py-3 button-hover focus:outline-none focus:ring-4 focus:ring-gray-200"
+                className="px-4 py-2 text-sm font-semibold text-white bg-gray-600 border border-gray-400 rounded-lg sm:px-6 sm:py-3 button-hover focus:outline-none"
               >
                 Pass
               </button>

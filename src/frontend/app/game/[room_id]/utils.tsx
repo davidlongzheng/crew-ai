@@ -14,7 +14,7 @@ export const formatCardText = (text: string) => {
           key={idx}
           className={`inline-flex items-center justify-center mx-0.5 ${
             SUIT_COLORS[suit as keyof typeof SUIT_COLORS]
-          } rounded-lg shadow-lg backdrop-blur-sm border border-white/30 px-1.5 py-0.5 min-w-[20px] h-5`}
+          } rounded-lg shadow-lg backdrop-blur-sm border border-white px-1.5 py-0.5 min-w-[20px] h-5`}
         >
           <span className="text-xs font-semibold text-white drop-shadow-sm">
             {rank}

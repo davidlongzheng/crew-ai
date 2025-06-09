@@ -14,7 +14,6 @@ export interface CenterAreaProps {
   isCurrentTurn: boolean;
 }
 
-
 export const CenterArea = ({
   phase,
   win,
@@ -28,7 +27,7 @@ export const CenterArea = ({
 }: CenterAreaProps) => {
   if (phase === "draft") {
     return (
-      <div className="flex flex-col items-center justify-start h-full gap-4 overflow-y-auto">
+      <div className="absolute flex flex-col items-center justify-start h-[60%] gap-2 lg:gap-4 py-1 overflow-y-auto -translate-x-1/2 top-[110px] left-1/2 w-[80%] sm:min-w-[200px]">
         {unassignedTasks.map((taskIdx) => {
           const isDraftable =
             isCurrentTurn &&
@@ -48,14 +47,14 @@ export const CenterArea = ({
                   if (draftAction) onDraft(draftAction);
                 }
               }}
-              className={`bg-white/90 backdrop-blur-sm rounded-xl border-2 p-4 w-full max-w-md shadow-lg transition-all duration-200
+              className={`bg-white/90 backdrop-blur-sm rounded-xl border-2 p-2 lg:p-4 w-4/5 max-w-xs shadow-lg transition-all duration-200
                 ${
                   isDraftable
                     ? "border-blue-500 hover:border-blue-600 cursor-pointer transform hover:scale-105 active:scale-95 hover:shadow-xl"
                     : "border-gray-300 opacity-50"
                 }`}
             >
-              <div className="text-sm sm:text-xs font-semibold text-gray-800 leading-relaxed break-words">
+              <div className="text-xs font-semibold leading-relaxed text-gray-800 break-words lg:text-sm">
                 {formatCardText(tasks[taskIdx].desc)}
               </div>
               <div className="mt-2 text-xs sm:text-[10px] font-medium text-gray-600">
@@ -71,58 +70,54 @@ export const CenterArea = ({
   if (phase === "end") {
     return (
       <div className="flex flex-col items-center justify-center h-full">
-        <div className="p-8 border shadow-xl bg-white/90 backdrop-blur-sm rounded-xl border-white/30">
-          <div
-            className={`text-4xl font-bold mb-4 text-center ${
-              win ? "text-green-600" : "text-red-600"
-            }`}
-          >
-            {win ? "Victory" : "Defeat"}
-          </div>
+        <div
+          className={`text-4xl font-bold mb-4 text-center ${
+            win ? "text-green-600" : "text-red-600"
+          }`}
+        >
+          {win ? "Victory" : "Defeat"}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="relative w-full h-full">
+    <>
       {activeCards.map(([card, playerIdx], idx) => {
         const position = getPlayerPosition(playerIdx, currentPlayerIdx);
         const offset = {
           top:
             position === "top"
-              ? "-mt-24"
+              ? "-mt-16 sm:-mt-20 md:-mt-24"
               : position === "bottom"
-              ? "mt-24"
+              ? "mt-16 sm:mt-20 md:mt-24"
               : "",
           left:
             position === "left"
-              ? "-ml-24"
+              ? "-ml-16 sm:-ml-20 md:-ml-24"
               : position === "right"
-              ? "ml-24"
+              ? "ml-16 sm:ml-20 md:ml-24"
               : "",
         };
 
         return (
           <div
             key={idx}
-            className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-24
-              ${offset.top} ${offset.left}
-              ${
-                SUIT_COLORS[card.suit as keyof typeof SUIT_COLORS]
-              } rounded-lg border-2 flex items-center justify-center shadow-lg
-              ${
-                card.is_trump
-                  ? "border-yellow-500 shadow-yellow-500/25"
-                  : "border-white shadow-lg"
-              }`}
+            className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 
+                w-[40px] h-[60px] md:w-16 md:h-24
+                ${offset.top} ${offset.left}
+                ${
+                  SUIT_COLORS[card.suit as keyof typeof SUIT_COLORS]
+                } rounded-lg border-2 flex items-center justify-center shadow-lg border-white`}
           >
             <div className="flex flex-col items-center">
-              <span className="text-lg font-bold text-white">{card.rank}</span>
+              <span className="text-base font-bold text-white sm:text-lg">
+                {card.rank}
+              </span>
             </div>
           </div>
         );
       })}
-    </div>
+    </>
   );
 };

@@ -52,10 +52,10 @@ export function LobbyStage({
   const joined = gameState.player_uids.includes(uid);
 
   return (
-    <main className="min-h-screen px-4 py-8 sm:px-6 lg:px-8">
-      <div className="max-w-4xl mx-auto space-y-8 animate-fadeInUp">
+    <main className="px-4 py-8 sm:px-6 lg:px-8">
+      <div className="max-w-4xl mx-auto space-y-8">
         {/* Header */}
-        <div className="space-y-4 text-center">
+        <div className="text-center">
           <h1 className="text-3xl font-bold text-gray-800 sm:text-4xl">
             Game Lobby
           </h1>
