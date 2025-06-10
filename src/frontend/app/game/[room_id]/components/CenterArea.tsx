@@ -16,7 +16,6 @@ export interface CenterAreaProps {
 
 export const CenterArea = ({
   phase,
-  win,
   unassignedTasks,
   tasks,
   validActions,
