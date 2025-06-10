@@ -1,4 +1,4 @@
-import { Action, action_to_string } from "@/lib/types";
+import { Action, action_to_string, Signal } from "@/lib/types";
 import { formatCardText } from "../utils";
 
 export interface ActionHistoryProps {
@@ -15,6 +15,7 @@ export interface ActionHistoryProps {
     number,
     { desc: string; difficulty: number; formula: string; task_idx: number }
   >;
+  signals: (Signal | null)[];
 }
 
 export const ActionHistory = ({
@@ -22,6 +23,7 @@ export const ActionHistory = ({
   handles,
   players,
   tasks,
+  signals,
 }: ActionHistoryProps) => (
   <div
     className="flex-1 space-y-3 overflow-y-auto"
@@ -38,7 +40,7 @@ export const ActionHistory = ({
               {handles[players.indexOf(event.action.player)]}:{" "}
             </span>
             <span className="font-medium text-gray-800">
-              {formatCardText(action_to_string(event.action, tasks))}
+              {formatCardText(action_to_string(event.action, tasks, signals))}
             </span>
           </>
         )}

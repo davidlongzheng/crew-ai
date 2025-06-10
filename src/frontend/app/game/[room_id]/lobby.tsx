@@ -54,6 +54,16 @@ export function LobbyStage({
   return (
     <main className="px-4 py-8 sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto space-y-8">
+        <div className="flex justify-end">
+          <button
+            onClick={() => {
+              window.location.href = "/";
+            }}
+            className="px-4 py-3 font-semibold text-white bg-blue-600 sm:w-auto rounded-xl button-hover focus:outline-none focus:ring-4 focus:ring-blue-200"
+          >
+            Return to Home
+          </button>
+        </div>
         {/* Header */}
         <div className="text-center">
           <h1 className="text-3xl font-bold text-gray-800 sm:text-4xl">
@@ -119,6 +129,16 @@ export function LobbyStage({
               </select>
             </div>
           </div>
+          <p className="mt-4 text-xs text-gray-500">
+            Note: Currently, AI only works in 4 player mode up to level 14.
+            Self-play win rate is ~50% for level 10 and there is an ~8% win rate
+            dropoff per level. AIs do not signal and do not understand signals.
+          </p>
+          <p className="mt-1 text-xs text-gray-500">
+            For simplicity, the draft phase is always 3 rounds, and the signal
+            phase takes place sequentially at the start of each trick, starting
+            from the leader.
+          </p>
         </div>
 
         {/* Players List */}

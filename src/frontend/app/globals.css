@@ -40,7 +40,7 @@ body {
 
 .button-hover:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(33, 150, 243, 0.3);
+  box-shadow: 0 8px 25px rgba(101, 112, 121, 0.3);
 }
 
 /* Hide scrollbar while keeping functionality */

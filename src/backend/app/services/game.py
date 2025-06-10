@@ -281,7 +281,7 @@ class GameRoom:
                     websocket,
                     Error(
                         room_id=self.room_id,
-                        message="Unsupported AI settings. AI only works for 4 players, difficulty up to 10.",
+                        message="Unsupported AI settings. AI only works for 4 players, difficulty up to 14.",
                     ),
                 )
                 return None

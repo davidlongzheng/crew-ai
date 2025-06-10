@@ -376,11 +376,14 @@ class Engine:
                 self.state.active_cards = []
                 if self.settings.use_signals and not self.settings.single_signal:
                     self.state.phase = "signal"
-                self.state.history.append(
-                    Event(
-                        type="new_trick", phase=self.state.phase, trick=self.state.trick
+                if self.state.trick < self.settings.num_tricks:
+                    self.state.history.append(
+                        Event(
+                            type="new_trick",
+                            phase=self.state.phase,
+                            trick=self.state.trick,
+                        )
                     )
-                )
             else:
                 self.state.cur_player = self.state.get_next_player()
 

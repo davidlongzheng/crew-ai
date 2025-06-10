@@ -14,14 +14,14 @@ export interface Task {
   task_idx: number;
 }
 
-export function action_to_string(action: Action, tasks: Record<number, Task>): string {
+export function action_to_string(action: Action, tasks: Record<number, Task>, signals: (Signal | null)[]): string {
   switch (action.type) {
     case "draft":
-      return `Drafted '${tasks[action.task_idx!].desc}'`;
+      return `Drafted "${tasks[action.task_idx!].desc}"`;
     case "nodraft":
       return "Passed";
     case "signal":
-      return `Signaled ${card_to_string(action.card!)}`;
+      return `Signaled ${card_to_string(action.card!)} as ${signals[action.player]!.value}`;
     case "nosignal":
       return "Passed";
     case "play":

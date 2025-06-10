@@ -15,55 +15,65 @@ interface GamePageProps {
 }
 
 // Components
-const LoadingScreen = () => (
-  <main className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
-    <div className="max-w-md mx-auto text-center space-y-8 animate-fadeInUp">
-      <div className="space-y-4">
-        <div className="w-16 h-16 mx-auto border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-        <h1 className="text-2xl sm:text-3xl font-semibold text-gray-800">
-          Loading Game...
-        </h1>
-        <p className="text-gray-600 font-medium">
-          Connecting to the game server
-        </p>
+const LoadingScreen = () => {
+  return (
+    <main className="flex flex-col items-center justify-center min-h-screen px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md mx-auto space-y-8 text-center animate-fadeInUp">
+        <div className="space-y-4">
+          <div className="w-16 h-16 mx-auto border-4 border-blue-600 rounded-full border-t-transparent animate-spin"></div>
+          <h1 className="text-2xl font-semibold text-gray-800 sm:text-3xl">
+            Loading Game...
+          </h1>
+          <button
+            onClick={() => {
+              window.location.href = "/";
+            }}
+            className="w-full sm:w-auto px-8 py-3 bg-blue-600 text-white rounded-xl font-semibold 
+                   button-hover focus:outline-none focus:ring-4 focus:ring-blue-200
+                   min-w-[200px]"
+          >
+            Return to Home
+          </button>
+        </div>
       </div>
-      <div className="w-full bg-gray-200 rounded-full h-2">
-        <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{width: '60%'}}></div>
-      </div>
-    </div>
-  </main>
-);
+    </main>
+  );
+};
 
-const ErrorScreen = ({
-  message,
-  onReturnHome,
-}: {
-  message: string;
-  onReturnHome: () => void;
-}) => (
-  <main className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
-    <div className="max-w-md mx-auto text-center space-y-8 animate-fadeInUp">
+const ErrorScreen = ({ message }: { message: string }) => (
+  <main className="flex flex-col items-center justify-center min-h-screen px-4 sm:px-6 lg:px-8">
+    <div className="max-w-md mx-auto space-y-8 text-center animate-fadeInUp">
       <div className="space-y-6">
         {/* Error Icon */}
-        <div className="w-16 h-16 mx-auto bg-red-100 rounded-full flex items-center justify-center">
-          <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+        <div className="flex items-center justify-center w-16 h-16 mx-auto bg-red-100 rounded-full">
+          <svg
+            className="w-8 h-8 text-red-600"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
+            />
           </svg>
         </div>
-        
+
         <div className="space-y-2">
-          <h1 className="text-2xl sm:text-3xl font-semibold text-gray-800">
+          <h1 className="text-2xl font-semibold text-gray-800 sm:text-3xl">
             Connection Error
           </h1>
-          <p className="text-gray-600 font-medium leading-relaxed">
-            {message}
-          </p>
+          <p className="font-medium leading-relaxed text-gray-600">{message}</p>
         </div>
       </div>
-      
+
       <div className="space-y-4">
         <button
-          onClick={onReturnHome}
+          onClick={() => {
+            window.location.href = "/";
+          }}
           className="w-full sm:w-auto px-8 py-3 bg-blue-600 text-white rounded-xl font-semibold 
                    button-hover focus:outline-none focus:ring-4 focus:ring-blue-200
                    min-w-[200px]"
@@ -205,7 +215,7 @@ function processSequencedMessage(
 // Main component
 const GamePage = ({ uid, roomId }: GamePageProps) => {
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket(
+  const { sendJsonMessage, lastJsonMessage } = useWebSocket(
     `${process.env.NEXT_PUBLIC_API_WS_URL}/game/ws/${roomId}?uid=${uid}`,
     {
       shouldReconnect: (closeEvent) => {
@@ -215,8 +225,6 @@ const GamePage = ({ uid, roomId }: GamePageProps) => {
         );
         return true; // Always try to reconnect
       },
-      reconnectAttempts: 10, // Optional: number of attempts
-      reconnectInterval: 3000, // Optional: ms between retries
       onClose: () => {
         console.warn("WebSocket closed, attempting to reconnect...");
       },
@@ -251,15 +259,6 @@ const GamePage = ({ uid, roomId }: GamePageProps) => {
       );
     }
   }, [roomId, lastJsonMessage, sendJsonMessage]);
-
-  if (readyState === ReadyState.CLOSED) {
-    return (
-      <ErrorScreen
-        message="Unable to connect to the game server. Please refresh or create a new game."
-        onReturnHome={() => (window.location.href = "/")}
-      />
-    );
-  }
 
   if (!gameState) {
     return <LoadingScreen />;
@@ -331,10 +330,7 @@ export default function GamePageWithLoading() {
 
   if (!uid || !roomId) {
     return (
-      <ErrorScreen
-        message="Missing required game parameters. Please return to the home page and try again."
-        onReturnHome={() => (window.location.href = "/")}
-      />
+      <ErrorScreen message="Missing required game parameters. Please return to the home page and try again." />
     );
   }
 

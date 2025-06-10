@@ -63,6 +63,23 @@ export const CenterArea = ({
             </div>
           );
         })}
+        {isCurrentTurn && validActions && (
+          <div className="flex justify-center">
+            {validActions.some((action) => action.type === "nodraft") && (
+              <button
+                onClick={() => {
+                  const passAction = validActions?.find(
+                    (action) => action.type === "nodraft"
+                  );
+                  if (passAction) onDraft(passAction);
+                }}
+                className="px-4 py-2 text-sm font-semibold text-white bg-gray-600 border border-gray-400 rounded-lg sm:px-6 sm:py-3 button-hover focus:outline-none"
+              >
+                Pass
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   }

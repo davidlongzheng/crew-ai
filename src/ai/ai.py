@@ -186,11 +186,11 @@ def get_ai(
         and not settings.use_signals
         and settings.bank == "all"
         and settings.min_difficulty == settings.max_difficulty
-        and (4 <= cast(int, settings.min_difficulty) <= 10)
+        and (4 <= cast(int, settings.min_difficulty) <= 14)
         and settings.max_num_tasks == 8
     ):
         for path in [
-            Path("/Users/davidzheng/projects/crew-ai/outdirs/0531/run_16"),
+            Path("/Users/davidzheng/projects/crew-ai/crew-ai/models/v0"),
             Path("/app/models/v0"),
         ]:
             if path.exists():

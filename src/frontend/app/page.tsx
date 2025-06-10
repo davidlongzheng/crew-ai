@@ -23,7 +23,7 @@ export default function Home() {
   };
 
   return (
-    <main className="flex flex-col items-center justify-center px-4 min-h-[500px] sm:px-6 lg:px-8">
+    <main className="flex flex-col items-center justify-center h-[80vh] px-4 sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto space-y-8 text-center animate-fadeInUp">
         {/* Header Section */}
         <div className="space-y-6">
@@ -34,7 +34,8 @@ export default function Home() {
             </span>
           </h1>
           <p className="max-w-3xl mx-auto text-lg font-medium leading-relaxed text-gray-600 sm:text-xl">
-            Create a new game room and share your URL with your friends!
+            Create a new game room and then share your room link with your
+            friends!
           </p>
         </div>
 

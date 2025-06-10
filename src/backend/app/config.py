@@ -18,9 +18,10 @@ from pydantic_settings import (
 
 class CORSConfig(BaseSettings):
     allow_origins: list[str] = [
-        "http://localhost:3000",
-        "https://crew-ai-gamma.vercel.app",
-        "http://192.168.1.151:3000",
+        "*",
+        # "http://localhost:3000",
+        # "https://crew-ai-gamma.vercel.app",
+        # "http://192.168.1.151:3000",
     ]  # Frontend URL
     allow_methods: list[str] = ["*"]
     allow_headers: list[str] = ["*"]

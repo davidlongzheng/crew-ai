@@ -65,15 +65,11 @@ export const PlayerHand = ({
         {/* Pass button */}
         {isCurrentTurn && validActions && (
           <div className="flex justify-center">
-            {validActions.some(
-              (action) =>
-                action.type === "nodraft" || action.type === "nosignal"
-            ) && (
+            {validActions.some((action) => action.type === "nosignal") && (
               <button
                 onClick={() => {
                   const passAction = validActions?.find(
-                    (action) =>
-                      action.type === "nodraft" || action.type === "nosignal"
+                    (action) => action.type === "nosignal"
                   );
                   if (passAction) onMove(passAction);
                 }}

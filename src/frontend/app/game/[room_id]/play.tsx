@@ -31,9 +31,13 @@ export function PlayStage({
     ? gameState.players[gameState.player_uids.indexOf(uid)]
     : 0;
 
+  const hasFailedTasks = gameState.engine_state!.assigned_tasks.some((tasks) =>
+    tasks.some((task) => task.status === "fail")
+  );
+
   return (
     <div className="relative min-h-screen overflow-hidden">
-      <div className="max-w-7xl mx-auto min-h-[calc(100vh-6rem)] lg:h-[calc(100vh-6rem)] relative z-10 mt-4 px-4 lg:px-0">
+      <div className="max-w-7xl mx-auto min-h-[calc(225vh-6rem)] lg:min-h-[calc(100vh-6rem)] lg:h-[calc(100vh-6rem)] relative z-10 mt-4 px-4 lg:px-0">
         {/* Header with game controls */}
         <div className="grid grid-cols-2 mb-3">
           <div className="flex justify-end col-start-3 gap-2">
@@ -48,7 +52,7 @@ export function PlayStage({
             >
               End Game
             </button>
-            {gameState.engine_state!.phase === "end" && (
+            {(gameState.engine_state!.phase === "end" || hasFailedTasks) && (
               <button
                 onClick={() => {
                   sendJsonMessage({
@@ -63,13 +67,10 @@ export function PlayStage({
             )}
           </div>
         </div>
-
         <div
           className={`grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 min-h-full lg:h-full`}
         >
-          {/* Main content area */}
           <div className="flex flex-col gap-4">
-            {/* Main game area */}
             <GameArea
               gameState={gameState}
               uid={uid}
@@ -77,7 +78,6 @@ export function PlayStage({
               handleMove={handleMove}
             />
 
-            {/* Player's hand */}
             <PlayerHand
               phase={gameState.engine_state!.phase}
               isCurrentTurn={gameState.cur_uid === uid}
@@ -86,8 +86,7 @@ export function PlayStage({
               onMove={handleMove}
             />
           </div>
-          {/* Action history sidebar - hidden on mobile, visible on desktop */}
-          <div className="flex flex-col p-6 overflow-hidden border shadow-lg lg:flex bg-white/80 backdrop-blur-sm rounded-xl border-white/30 max-h-[80vh] lg:max-h-none">
+          <div className="flex flex-col p-6 overflow-hidden border shadow-lg lg:flex bg-white/80 backdrop-blur-sm rounded-xl border-white/30 max-h-[500px] lg:max-h-none">
             <h2 className="mb-6 text-xl font-semibold text-gray-800">
               History
             </h2>
@@ -96,6 +95,7 @@ export function PlayStage({
               handles={gameState.handles}
               players={gameState.players}
               tasks={gameState.tasks!}
+              signals={gameState.engine_state!.signals}
             />
           </div>
         </div>

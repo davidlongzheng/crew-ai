@@ -1,0 +1,13 @@
+version: 3
+
+agent:
+  authtoken: 2yHFNXLnsBYM8q8ZRc0zLWsVypV_5Uy1w6UKG6XXF94xJGgnJ
+  api_key: 2yHFCDzHLN8RIasyxbpkx13YVjQ_4GNfDgb6LCVnDPsXHZaX8
+
+tunnels:
+  frontend:
+    proto: http
+    addr: 3000
+  backend:
+    proto: http
+    addr: 8000
