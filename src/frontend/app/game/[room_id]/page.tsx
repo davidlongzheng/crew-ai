@@ -1,7 +1,7 @@
 "use client";
 
 import { Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
-import useWebSocket, { ReadyState } from "react-use-websocket";
+import useWebSocket from "react-use-websocket";
 import { ClientMessage, GameState, ServerMessage } from "@/lib/types";
 import { Queue } from "@/lib/queue";
 import { useParams } from "next/navigation";
