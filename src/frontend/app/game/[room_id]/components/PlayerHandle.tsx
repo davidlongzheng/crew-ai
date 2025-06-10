@@ -1,4 +1,5 @@
 import { Card, Signal } from "@/lib/types";
+import { SUIT_COLORS } from "../constants";
 
 export interface PlayerHandleProps {
   handle: string;
@@ -32,16 +33,7 @@ export const PlayerHandle = ({
     signal &&
     !hand?.some(
       (card) => card.rank === signal.card.rank && card.suit === signal.card.suit
-    )
-      ? 1
-      : 0;
-  const signalUnplayed =
-    signal &&
-    hand?.some(
-      (card) => card.rank === signal.card.rank && card.suit === signal.card.suit
-    )
-      ? 1
-      : 0;
+    );
 
   return (
     <div
@@ -64,8 +56,7 @@ export const PlayerHandle = ({
         {(successfulTasks > 0 ||
           failedTasks > 0 ||
           unresolvedTasks > 0 ||
-          signalPlayed > 0 ||
-          signalUnplayed > 0 ||
+          signal ||
           isCaptain) && (
           <div className="flex gap-1">
             {isCaptain && (
@@ -88,14 +79,20 @@ export const PlayerHandle = ({
                 {unresolvedTasks}
               </span>
             )}
-            {signalUnplayed > 0 && (
-              <span className="flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-yellow-500 rounded-full">
-                S
-              </span>
-            )}
-            {signalPlayed > 0 && (
-              <span className="flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-gray-400 rounded-full">
-                S
+            {signal && (
+              // <span className="flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-gray-400 rounded-full">
+              //   S
+              // </span>
+              <span
+                className={`inline-flex items-center justify-center mx-0.5 ${
+                  signalPlayed
+                    ? "bg-gray-400"
+                    : SUIT_COLORS[signal.card.suit as keyof typeof SUIT_COLORS]
+                } rounded-lg shadow-lg backdrop-blur-sm border border-white px-1.5 py-0.5 min-w-[20px] h-5`}
+              >
+                <span className="text-xs font-semibold text-white drop-shadow-sm">
+                  {signal.card.rank}
+                </span>
               </span>
             )}
           </div>

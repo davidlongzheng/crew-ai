@@ -43,6 +43,7 @@ export function GameArea({
       <GameStatus
         phase={gameState.engine_state!.phase}
         trick={gameState.engine_state!.trick}
+        win={gameState.engine_state!.status === "success"}
       />
       {/* Player positions */}
       {gameState.players.map((playerIdx, idx) => {

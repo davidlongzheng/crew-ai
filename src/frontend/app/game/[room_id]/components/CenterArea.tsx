@@ -84,19 +84,19 @@ export const CenterArea = ({
     );
   }
 
-  if (phase === "end") {
-    return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <div
-          className={`text-4xl font-bold mb-4 text-center ${
-            win ? "text-green-600" : "text-red-600"
-          }`}
-        >
-          {win ? "Victory" : "Defeat"}
-        </div>
-      </div>
-    );
-  }
+  // if (phase === "end") {
+  //   return (
+  //     <div className="flex flex-col items-center justify-center h-full">
+  //       <div
+  //         className={`text-4xl font-bold mb-4 text-center ${
+  //           win ? "text-green-600" : "text-red-600"
+  //         }`}
+  //       >
+  //         {win ? "Victory" : "Defeat"}
+  //       </div>
+  //     </div>
+  //   );
+  // }
 
   return (
     <>

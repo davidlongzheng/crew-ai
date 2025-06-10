@@ -134,11 +134,6 @@ export function LobbyStage({
             Self-play win rate is ~50% for level 10 and there is an ~8% win rate
             dropoff per level. AIs do not signal and do not understand signals.
           </p>
-          <p className="mt-1 text-xs text-gray-500">
-            For simplicity, the draft phase is always 3 rounds, and the signal
-            phase takes place sequentially at the start of each trick, starting
-            from the leader.
-          </p>
         </div>
 
         {/* Players List */}
