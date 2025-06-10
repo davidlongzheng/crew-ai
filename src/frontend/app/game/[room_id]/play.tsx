@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { Action, ClientMessage, GameState } from "@/lib/types";
 import { GameArea } from "./components/GameArea";
 import { ActionHistory } from "./components/ActionHistory";
